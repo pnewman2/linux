@@ -336,6 +336,8 @@ struct arch_mbm_state {
  * @ctrl_val:	array of cache or mem ctrl values (indexed by CLOSID)
  * @arch_mbm_total:	arch private state for MBM total bandwidth
  * @arch_mbm_local:	arch private state for MBM local bandwidth
+ * @evtsel_lock:	serializes counter reads when QM_EVTSEL MSR is shared
+ *			per-domain
  *
  * Members of this structure are accessed via helpers that provide abstraction.
  */
@@ -344,6 +346,7 @@ struct rdt_hw_domain {
 	u32				*ctrl_val;
 	struct arch_mbm_state		*arch_mbm_total;
 	struct arch_mbm_state		*arch_mbm_local;
+	raw_spinlock_t			evtsel_lock;
 };
 
 static inline struct rdt_hw_domain *resctrl_to_arch_dom(struct rdt_domain *r)
@@ -438,6 +441,8 @@ extern struct mutex rdtgroup_mutex;
 extern struct rdt_hw_resource rdt_resources_all[];
 extern struct rdtgroup rdtgroup_default;
 DECLARE_STATIC_KEY_FALSE(rdt_alloc_enable_key);
+
+extern bool rdt_mon_shared_evtsel;
 
 extern struct dentry *debugfs_resctrl;
 

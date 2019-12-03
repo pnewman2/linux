@@ -63,6 +63,11 @@ bool rdt_mon_capable;
 unsigned int rdt_mon_features;
 
 /*
+ * Indicates when QM_EVTSEL is shared by CPUs in a domain.
+ */
+bool rdt_mon_shared_evtsel;
+
+/*
  * This is the threshold cache occupancy in bytes at which we will consider an
  * RMID available for re-allocation.
  */
@@ -146,9 +151,26 @@ static inline struct rmid_entry *__rmid_entry(u32 rmid)
 	return entry;
 }
 
-static int __rmid_read(u32 rmid, enum resctrl_event_id eventid, u64 *val)
+static int __rmid_read(struct rdt_hw_domain *hw_dom, u32 rmid,
+		       enum resctrl_event_id eventid, u64 *val)
 {
+	unsigned long flags;
+	bool lock = false;
 	u64 msr_val;
+
+	/*
+	 * Avoid assuming that changes to the static key value or
+	 * rdt_mon_shared_evtsel won't be observed while the lock is held.
+	 *
+	 * Event counter reads are serialized by the rdtgroup_mutex except for
+	 * when using soft RMIDs, in which case counter reads are triggered
+	 * by IPI broadcasts in the MBM domain.
+	 */
+	if (static_branch_unlikely(&rdt_soft_rmid_enable_key))
+		lock = READ_ONCE(rdt_mon_shared_evtsel);
+
+	if (lock)
+		raw_spin_lock_irqsave(&hw_dom->evtsel_lock, flags);
 
 	/*
 	 * As per the SDM, when IA32_QM_EVTSEL.EvtID (bits 7:0) is configured
@@ -160,6 +182,9 @@ static int __rmid_read(u32 rmid, enum resctrl_event_id eventid, u64 *val)
 	 */
 	wrmsr(MSR_IA32_QM_EVTSEL, eventid, rmid);
 	rdmsrl(MSR_IA32_QM_CTR, msr_val);
+
+	if (lock)
+		raw_spin_unlock_irqrestore(&hw_dom->evtsel_lock, flags);
 
 	if (msr_val & RMID_VAL_ERROR)
 		return -EIO;
@@ -204,7 +229,7 @@ void resctrl_arch_reset_rmid(struct rdt_resource *r, struct rdt_domain *d,
 		memset(am, 0, sizeof(*am));
 
 		/* Record any initial, non-zero count value. */
-		__rmid_read(rmid, eventid, &am->prev_msr);
+		__rmid_read(hw_dom, rmid, eventid, &am->prev_msr);
 	}
 }
 
@@ -245,7 +270,7 @@ int resctrl_arch_rmid_read(struct rdt_resource *r, struct rdt_domain *d,
 	if (!cpumask_test_cpu(smp_processor_id(), &d->cpu_mask))
 		return -EINVAL;
 
-	ret = __rmid_read(rmid, eventid, &msr_val);
+	ret = __rmid_read(hw_dom, rmid, eventid, &msr_val);
 	if (ret)
 		return ret;
 

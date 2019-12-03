@@ -531,6 +531,8 @@ static void domain_add_cpu(int cpu, struct rdt_resource *r)
 	d->id = id;
 	cpumask_set_cpu(cpu, &d->cpu_mask);
 
+	raw_spin_lock_init(&hw_dom->evtsel_lock);
+
 	rdt_domain_reconfigure_cdp(r);
 
 	if (r->alloc_capable && domain_setup_ctrlval(r, d)) {
@@ -869,6 +871,40 @@ static __init bool get_rdt_mon_resources(void)
 	return !rdt_get_mon_l3_config(r);
 }
 
+static __init bool amd_shared_qm_evtsel(void)
+{
+	/*
+	 * From AMD64 Technology Platform Quality of Service Extensions,
+	 * Revision 1.03:
+	 *
+	 * "For PQoS Version 1.0 and 2.0, as identified by Family/Model, the
+	 * QM_EVTSEL register is shared by all the processors in a QOS domain."
+	 *
+	 * Check the inclusive Family/Model ranges for PQoS Extension versions
+	 * 1.0 and 2.0 from the PQoS Extension Versions table.
+	 */
+	if (boot_cpu_data.x86 == 0x17)
+		/* V1.0 */
+		return boot_cpu_data.x86_model >= 0x30 &&
+			boot_cpu_data.x86_model <= 0x9f;
+
+	if (boot_cpu_data.x86 == 0x19)
+		/* V2.0 */
+		return (boot_cpu_data.x86_model <= 0xf) ||
+			((boot_cpu_data.x86_model >= 0x20) &&
+			 (boot_cpu_data.x86_model <= 0x5f));
+
+	return false;
+}
+
+static __init void __check_quirks_amd(void)
+{
+	if (rdt_cpu_has(X86_FEATURE_CQM_MBM_TOTAL) ||
+	    rdt_cpu_has(X86_FEATURE_CQM_MBM_LOCAL)) {
+		rdt_mon_shared_evtsel = amd_shared_qm_evtsel();
+	}
+}
+
 static __init void __check_quirks_intel(void)
 {
 	switch (boot_cpu_data.x86_model) {
@@ -892,6 +928,8 @@ static __init void check_quirks(void)
 {
 	if (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL)
 		__check_quirks_intel();
+	else if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD)
+		__check_quirks_amd();
 }
 
 static __init bool get_rdt_resources(void)
