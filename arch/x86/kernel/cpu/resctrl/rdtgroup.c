@@ -538,12 +538,38 @@ static void _update_task_closid_rmid(void *task)
 		resctrl_sched_in();
 }
 
-static void update_task_closid_rmid(struct task_struct *t)
+static int update_locked_task_closid_rmid(struct task_struct *t, void *arg)
 {
-	if (IS_ENABLED(CONFIG_SMP) && task_curr(t))
-		smp_call_function_single(task_cpu(t), _update_task_closid_rmid, t, 1);
-	else
-		_update_task_closid_rmid(t);
+	struct rdtgroup *rdtgrp = arg;
+
+	/*
+	 * We assume task_call_func() has provided the necessary serialization
+	 * with resctrl_sched_in().
+	 */
+	if (rdtgrp->type == RDTCTRL_GROUP) {
+		t->closid = rdtgrp->closid;
+		t->rmid = rdtgrp->mon.rmid;
+	} else if (rdtgrp->type == RDTMON_GROUP) {
+		t->rmid = rdtgrp->mon.rmid;
+	}
+
+	/*
+	 * If the task is current on a CPU, the PQR_ASSOC MSR needs to be
+	 * updated to make the resource group go into effect. If the task is not
+	 * current, the MSR will be updated when the task is scheduled in.
+	 */
+	return task_curr(t);
+}
+
+static bool update_task_closid_rmid(struct task_struct *t,
+				    struct rdtgroup *rdtgrp)
+{
+	/*
+	 * Serialize the closid and rmid update with context switch. If this
+	 * function indicates that the task was running, then it needs to be
+	 * interrupted to install the new closid and rmid.
+	 */
+	return task_call_func(t, update_locked_task_closid_rmid, rdtgrp);
 }
 
 static int __rdtgroup_move_task(struct task_struct *tsk,
@@ -557,39 +583,26 @@ static int __rdtgroup_move_task(struct task_struct *tsk,
 		return 0;
 
 	/*
-	 * Set the task's closid/rmid before the PQR_ASSOC MSR can be
-	 * updated by them.
-	 *
-	 * For ctrl_mon groups, move both closid and rmid.
 	 * For monitor groups, can move the tasks only from
 	 * their parent CTRL group.
 	 */
-
-	if (rdtgrp->type == RDTCTRL_GROUP) {
-		WRITE_ONCE(tsk->closid, rdtgrp->closid);
-		WRITE_ONCE(tsk->rmid, rdtgrp->mon.rmid);
-	} else if (rdtgrp->type == RDTMON_GROUP) {
-		if (rdtgrp->mon.parent->closid == tsk->closid) {
-			WRITE_ONCE(tsk->rmid, rdtgrp->mon.rmid);
-		} else {
-			rdt_last_cmd_puts("Can't move task to different control group\n");
-			return -EINVAL;
-		}
+	if (rdtgrp->type == RDTMON_GROUP &&
+	    rdtgrp->mon.parent->closid != tsk->closid) {
+		rdt_last_cmd_puts("Can't move task to different control group\n");
+		return -EINVAL;
 	}
 
-	/*
-	 * Ensure the task's closid and rmid are written before determining if
-	 * the task is current that will decide if it will be interrupted.
-	 */
-	barrier();
-
-	/*
-	 * By now, the task's closid and rmid are set. If the task is current
-	 * on a CPU, the PQR_ASSOC MSR needs to be updated to make the resource
-	 * group go into effect. If the task is not current, the MSR will be
-	 * updated when the task is scheduled in.
-	 */
-	update_task_closid_rmid(tsk);
+	if (update_task_closid_rmid(tsk, rdtgrp) && IS_ENABLED(CONFIG_SMP))
+		/*
+		 * If the task has migrated away from the CPU indicated by
+		 * task_cpu() below, then it has already switched in on the
+		 * new CPU using the updated closid and rmid and the call below
+		 * unnecessary, but harmless.
+		 */
+		smp_call_function_single(task_cpu(tsk),
+					 _update_task_closid_rmid, tsk, 1);
+	else
+		_update_task_closid_rmid(tsk);
 
 	return 0;
 }
@@ -2385,12 +2398,13 @@ static int reset_all_ctrls(struct rdt_resource *r)
  * Move tasks from one to the other group. If @from is NULL, then all tasks
  * in the systems are moved unconditionally (used for teardown).
  *
- * If @mask is not NULL the cpus on which moved tasks are running are set
- * in that mask so the update smp function call is restricted to affected
- * cpus.
+ * Following this operation, the caller is required to update the MSRs on all
+ * CPUs. The cost of constructing the precise mask of CPUs impacted by this
+ * operation will likely be high, during which we'll be blocking writes to the
+ * tasklist, and in non-trivial cases, the resulting mask would contain most of
+ * the CPUs anyways.
  */
-static void rdt_move_group_tasks(struct rdtgroup *from, struct rdtgroup *to,
-				 struct cpumask *mask)
+static void rdt_move_group_tasks(struct rdtgroup *from, struct rdtgroup *to)
 {
 	struct task_struct *p, *t;
 
@@ -2400,16 +2414,6 @@ static void rdt_move_group_tasks(struct rdtgroup *from, struct rdtgroup *to,
 		    is_rmid_match(t, from)) {
 			WRITE_ONCE(t->closid, to->closid);
 			WRITE_ONCE(t->rmid, to->mon.rmid);
-
-			/*
-			 * If the task is on a CPU, set the CPU in the mask.
-			 * The detection is inaccurate as tasks might move or
-			 * schedule before the smp function call takes place.
-			 * In such a case the function call is pointless, but
-			 * there is no other side effect.
-			 */
-			if (IS_ENABLED(CONFIG_SMP) && mask && task_curr(t))
-				cpumask_set_cpu(task_cpu(t), mask);
 		}
 	}
 	read_unlock(&tasklist_lock);
@@ -2440,7 +2444,7 @@ static void rmdir_all_sub(void)
 	struct rdtgroup *rdtgrp, *tmp;
 
 	/* Move all tasks to the default resource group */
-	rdt_move_group_tasks(NULL, &rdtgroup_default, NULL);
+	rdt_move_group_tasks(NULL, &rdtgroup_default);
 
 	list_for_each_entry_safe(rdtgrp, tmp, &rdt_all_groups, rdtgroup_list) {
 		/* Free any child rmids */
@@ -3099,23 +3103,19 @@ static int rdtgroup_mkdir(struct kernfs_node *parent_kn, const char *name,
 	return -EPERM;
 }
 
-static int rdtgroup_rmdir_mon(struct rdtgroup *rdtgrp, cpumask_var_t tmpmask)
+static int rdtgroup_rmdir_mon(struct rdtgroup *rdtgrp)
 {
 	struct rdtgroup *prdtgrp = rdtgrp->mon.parent;
 	int cpu;
 
 	/* Give any tasks back to the parent group */
-	rdt_move_group_tasks(rdtgrp, prdtgrp, tmpmask);
+	rdt_move_group_tasks(rdtgrp, prdtgrp);
 
 	/* Update per cpu rmid of the moved CPUs first */
 	for_each_cpu(cpu, &rdtgrp->cpu_mask)
 		per_cpu(pqr_state.default_rmid, cpu) = prdtgrp->mon.rmid;
-	/*
-	 * Update the MSR on moved CPUs and CPUs which have moved
-	 * task running on them.
-	 */
-	cpumask_or(tmpmask, tmpmask, &rdtgrp->cpu_mask);
-	update_closid_rmid(tmpmask, NULL);
+
+	update_closid_rmid(cpu_online_mask, NULL);
 
 	rdtgrp->flags = RDT_DELETED;
 	free_rmid(rdtgrp->mon.rmid);
@@ -3140,12 +3140,12 @@ static int rdtgroup_ctrl_remove(struct rdtgroup *rdtgrp)
 	return 0;
 }
 
-static int rdtgroup_rmdir_ctrl(struct rdtgroup *rdtgrp, cpumask_var_t tmpmask)
+static int rdtgroup_rmdir_ctrl(struct rdtgroup *rdtgrp)
 {
 	int cpu;
 
 	/* Give any tasks back to the default group */
-	rdt_move_group_tasks(rdtgrp, &rdtgroup_default, tmpmask);
+	rdt_move_group_tasks(rdtgrp, &rdtgroup_default);
 
 	/* Give any CPUs back to the default group */
 	cpumask_or(&rdtgroup_default.cpu_mask,
@@ -3157,12 +3157,7 @@ static int rdtgroup_rmdir_ctrl(struct rdtgroup *rdtgrp, cpumask_var_t tmpmask)
 		per_cpu(pqr_state.default_rmid, cpu) = rdtgroup_default.mon.rmid;
 	}
 
-	/*
-	 * Update the MSR on moved CPUs and CPUs which have moved
-	 * task running on them.
-	 */
-	cpumask_or(tmpmask, tmpmask, &rdtgrp->cpu_mask);
-	update_closid_rmid(tmpmask, NULL);
+	update_closid_rmid(cpu_online_mask, NULL);
 
 	closid_free(rdtgrp->closid);
 	free_rmid(rdtgrp->mon.rmid);
@@ -3181,11 +3176,7 @@ static int rdtgroup_rmdir(struct kernfs_node *kn)
 {
 	struct kernfs_node *parent_kn = kn->parent;
 	struct rdtgroup *rdtgrp;
-	cpumask_var_t tmpmask;
 	int ret = 0;
-
-	if (!zalloc_cpumask_var(&tmpmask, GFP_KERNEL))
-		return -ENOMEM;
 
 	rdtgrp = rdtgroup_kn_lock_live(kn);
 	if (!rdtgrp) {
@@ -3206,18 +3197,17 @@ static int rdtgroup_rmdir(struct kernfs_node *kn)
 		    rdtgrp->mode == RDT_MODE_PSEUDO_LOCKED) {
 			ret = rdtgroup_ctrl_remove(rdtgrp);
 		} else {
-			ret = rdtgroup_rmdir_ctrl(rdtgrp, tmpmask);
+			ret = rdtgroup_rmdir_ctrl(rdtgrp);
 		}
 	} else if (rdtgrp->type == RDTMON_GROUP &&
 		 is_mon_groups(parent_kn, kn->name)) {
-		ret = rdtgroup_rmdir_mon(rdtgrp, tmpmask);
+		ret = rdtgroup_rmdir_mon(rdtgrp);
 	} else {
 		ret = -EPERM;
 	}
 
 out:
 	rdtgroup_kn_unlock(kn);
-	free_cpumask_var(tmpmask);
 	return ret;
 }
 
