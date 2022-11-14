@@ -538,10 +538,47 @@ static void _update_task_closid_rmid(void *task)
 		resctrl_sched_in();
 }
 
-static void update_task_closid_rmid(struct task_struct *t)
+static int update_locked_task_closid_rmid(struct task_struct *t, void *arg)
 {
-	if (IS_ENABLED(CONFIG_SMP) && task_curr(t))
-		smp_call_function_single(task_cpu(t), _update_task_closid_rmid, t, 1);
+	struct rdtgroup *rdtgrp = arg;
+
+	/*
+	 * We assume task_call_func() has provided the necessary serialization
+	 * with resctrl_sched_in().
+	 */
+	if (rdtgrp->type == RDTCTRL_GROUP) {
+		t->closid = rdtgrp->closid;
+		t->rmid = rdtgrp->mon.rmid;
+	} else if (rdtgrp->type == RDTMON_GROUP) {
+		t->rmid = rdtgrp->mon.rmid;
+	}
+
+	/*
+	 * If the task is current on a CPU, the PQR_ASSOC MSR needs to be
+	 * updated to make the resource group go into effect. If the task is not
+	 * current, the MSR will be updated when the task is scheduled in.
+	 */
+	return task_curr(t);
+}
+
+static void update_task_closid_rmid(struct task_struct *t,
+				    struct rdtgroup *rdtgrp)
+{
+	/*
+	 * Serialize the closid and rmid update with context switch. If this
+	 * function indicates that the task was running, then it needs to be
+	 * interrupted to install the new closid and rmid.
+	 */
+	if (task_call_func(t, update_locked_task_closid_rmid, rdtgrp) &&
+	    IS_ENABLED(CONFIG_SMP))
+		/*
+		 * If the task has migrated away from the CPU indicated by
+		 * task_cpu() below, then it has already switched in on the
+		 * new CPU using the updated closid and rmid and the call below
+		 * unnecessary, but harmless.
+		 */
+		smp_call_function_single(task_cpu(t),
+					 _update_task_closid_rmid, t, 1);
 	else
 		_update_task_closid_rmid(t);
 }
@@ -557,39 +594,16 @@ static int __rdtgroup_move_task(struct task_struct *tsk,
 		return 0;
 
 	/*
-	 * Set the task's closid/rmid before the PQR_ASSOC MSR can be
-	 * updated by them.
-	 *
-	 * For ctrl_mon groups, move both closid and rmid.
 	 * For monitor groups, can move the tasks only from
 	 * their parent CTRL group.
 	 */
-
-	if (rdtgrp->type == RDTCTRL_GROUP) {
-		WRITE_ONCE(tsk->closid, rdtgrp->closid);
-		WRITE_ONCE(tsk->rmid, rdtgrp->mon.rmid);
-	} else if (rdtgrp->type == RDTMON_GROUP) {
-		if (rdtgrp->mon.parent->closid == tsk->closid) {
-			WRITE_ONCE(tsk->rmid, rdtgrp->mon.rmid);
-		} else {
-			rdt_last_cmd_puts("Can't move task to different control group\n");
-			return -EINVAL;
-		}
+	if (rdtgrp->type == RDTMON_GROUP &&
+	    rdtgrp->mon.parent->closid != tsk->closid) {
+		rdt_last_cmd_puts("Can't move task to different control group\n");
+		return -EINVAL;
 	}
 
-	/*
-	 * Ensure the task's closid and rmid are written before determining if
-	 * the task is current that will decide if it will be interrupted.
-	 */
-	barrier();
-
-	/*
-	 * By now, the task's closid and rmid are set. If the task is current
-	 * on a CPU, the PQR_ASSOC MSR needs to be updated to make the resource
-	 * group go into effect. If the task is not current, the MSR will be
-	 * updated when the task is scheduled in.
-	 */
-	update_task_closid_rmid(tsk);
+	update_task_closid_rmid(tsk, rdtgrp);
 
 	return 0;
 }
