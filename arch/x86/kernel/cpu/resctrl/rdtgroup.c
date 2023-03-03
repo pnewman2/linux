@@ -2393,22 +2393,29 @@ static int reset_all_ctrls(struct rdt_resource *r)
 }
 
 /*
- * Move tasks from one to the other group. If @from is NULL, then all tasks
- * in the systems are moved unconditionally (used for teardown).
+ * Move tasks from one to the other group.
+ *
+ * @from:		passed unmodified to task_match_fn() for each task
+ * @to:			group providing new config values for matching tasks
+ * @task_match_fn:	callback returning true when a task requires update
+ * @mask:		output-parameter indicating set of CPUs impacted by this
+ *			operation
  *
  * If @mask is not NULL the cpus on which moved tasks are running are set
  * in that mask so the update smp function call is restricted to affected
  * cpus.
  */
-static void rdt_move_group_tasks(struct rdtgroup *from, struct rdtgroup *to,
-				 struct cpumask *mask)
+static void rdt_move_group_tasks(struct rdtgroup *from,
+				 struct rdtgroup *to,
+				 struct cpumask *mask,
+				 bool task_match_fn(struct task_struct *,
+						    struct rdtgroup *))
 {
 	struct task_struct *p, *t;
 
 	read_lock(&tasklist_lock);
 	for_each_process_thread(p, t) {
-		if (!from || is_closid_match(t, from) ||
-		    is_rmid_match(t, from)) {
+		if (task_match_fn(t, from)) {
 			WRITE_ONCE(t->closid, to->closid);
 			WRITE_ONCE(t->rmid, to->mon.rmid);
 
@@ -2452,6 +2459,15 @@ static void free_all_child_rdtgrp(struct rdtgroup *rdtgrp)
 }
 
 /*
+ * If @from is NULL, then all tasks in the systems are moved unconditionally
+ * (used for teardown).
+ */
+static bool rmdir_match(struct task_struct *t, struct rdtgroup *from)
+{
+	return !from || is_closid_match(t, from) || is_rmid_match(t, from);
+}
+
+/*
  * Forcibly remove all of subdirectories under root.
  */
 static void rmdir_all_sub(void)
@@ -2459,7 +2475,7 @@ static void rmdir_all_sub(void)
 	struct rdtgroup *rdtgrp, *tmp;
 
 	/* Move all tasks to the default resource group */
-	rdt_move_group_tasks(NULL, &rdtgroup_default, NULL);
+	rdt_move_group_tasks(NULL, &rdtgroup_default, NULL, rmdir_match);
 
 	list_for_each_entry_safe(rdtgrp, tmp, &rdt_all_groups, rdtgroup_list) {
 		/* Free any child rmids */
@@ -3124,7 +3140,7 @@ static int rdtgroup_rmdir_mon(struct rdtgroup *rdtgrp, cpumask_var_t tmpmask)
 	int cpu;
 
 	/* Give any tasks back to the parent group */
-	rdt_move_group_tasks(rdtgrp, prdtgrp, tmpmask);
+	rdt_move_group_tasks(rdtgrp, prdtgrp, tmpmask, rmdir_match);
 
 	/* Update per cpu rmid of the moved CPUs first */
 	for_each_cpu(cpu, &rdtgrp->cpu_mask)
@@ -3164,7 +3180,7 @@ static int rdtgroup_rmdir_ctrl(struct rdtgroup *rdtgrp, cpumask_var_t tmpmask)
 	int cpu;
 
 	/* Give any tasks back to the default group */
-	rdt_move_group_tasks(rdtgrp, &rdtgroup_default, tmpmask);
+	rdt_move_group_tasks(rdtgrp, &rdtgroup_default, tmpmask, rmdir_match);
 
 	/* Give any CPUs back to the default group */
 	cpumask_or(&rdtgroup_default.cpu_mask,
