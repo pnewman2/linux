@@ -5,6 +5,8 @@ CFLAGS += $(KHDR_INCLUDES)
 
 TEST_GEN_PROGS := resctrl_tests
 
+TEST_PROGS := test_mongrp_move.sh
+
 include ../lib.mk
 
 $(OUTPUT)/resctrl_tests: $(wildcard *.c)
