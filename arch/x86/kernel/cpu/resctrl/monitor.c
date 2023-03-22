@@ -170,6 +170,10 @@ static int __rmid_read(u32 rmid, enum resctrl_event_id eventid, u64 *val)
 	return 0;
 }
 
+/**
+ * @rmid can refer to either a hard or soft RMID, as this arch_mbm_state
+ * contains the state of both hard and soft counters for the given parameters.
+ */
 static struct arch_mbm_state *get_arch_mbm_state(struct rdt_hw_domain *hw_dom,
 						 u32 rmid,
 						 enum resctrl_event_id eventid)
@@ -394,6 +398,98 @@ static struct mbm_state *get_mbm_state(struct rdt_domain *d, u32 rmid,
 	default:
 		return NULL;
 	}
+}
+
+struct mbm_flush_state {
+	u64 prev_local_bytes;
+	u64 prev_total_bytes;
+	struct rdt_hw_domain *domain;
+};
+
+DEFINE_PER_CPU(struct mbm_flush_state, flush_state);
+
+void mbm_add_cpu(unsigned int cpu)
+{
+	struct rdt_resource *r = &rdt_resources_all[RDT_RESOURCE_L3].r_resctrl;
+	struct mbm_flush_state *state = this_cpu_ptr(&flush_state);
+	struct rdt_domain *d;
+
+	d = get_domain_from_cpu(cpu, r);
+	if (WARN_ON(!d))
+		return;
+
+	WARN_ON(state->domain != NULL);
+	state->domain = resctrl_to_arch_dom(d);
+}
+
+void mbm_remove_cpu(unsigned int cpu)
+{
+	per_cpu(flush_state, cpu).domain = NULL;
+}
+
+/*
+ * flushes the value of the cpu_rmid to the current soft RMID
+ */
+static void __mbm_flush(int evtid, struct rdt_resource *r)
+{
+	struct mbm_flush_state *state = this_cpu_ptr(&flush_state);
+	u32 mon_id = this_cpu_ptr(&pqr_state)->cur_rmid;
+	u32 rmid = this_cpu_ptr(&pqr_state)->cpu_rmid;
+	struct arch_mbm_state *am;
+	u64 *counter;
+	u64 val;
+
+	/*
+	 * Avoid assuming that CPU online handlers run before the first context
+	 * switch.
+	 */
+	if (!state->domain)
+		return;
+
+	/* cache occupancy events are disabled in this mode */
+	WARN_ON_ONCE(!is_mbm_event(evtid));
+
+	if (evtid == QOS_L3_MBM_LOCAL_EVENT_ID) {
+		counter = &state->prev_local_bytes;
+	} else {
+		WARN_ON_ONCE(evtid != QOS_L3_MBM_TOTAL_EVENT_ID);
+		counter = &state->prev_total_bytes;
+	}
+
+	/*
+	 * Propagate the value read from the RMID assigned to the current CPU
+	 * into the soft RMID associated with the current task or CPU.
+	 */
+	am = get_arch_mbm_state(state->domain, mon_id, evtid);
+	if (!am)
+		return;
+
+	if (resctrl_arch_rmid_read(r, &state->domain->d_resctrl, rmid,
+	    evtid, &val))
+		return;
+
+	/*
+	 * Assume the overflow handler will trigger enough flushes to prevent
+	 * double-overflows.
+	 */
+	if (val != *counter) {
+		atomic64_add(val - *counter, &am->soft_rmid_bytes);
+		*counter = val;
+	}
+}
+
+/*
+ * Called from context switch code __resctrl_sched_in() when the current soft
+ * RMID is changing or before reporting event counts to user space.
+ */
+void resctrl_mbm_flush_cpu(void)
+{
+	struct rdt_resource *r = &rdt_resources_all[RDT_RESOURCE_L3].r_resctrl;
+
+	if (is_mbm_local_enabled())
+		__mbm_flush(QOS_L3_MBM_LOCAL_EVENT_ID, r);
+	if (is_mbm_total_enabled())
+		__mbm_flush(QOS_L3_MBM_TOTAL_EVENT_ID, r);
 }
 
 static int __mon_event_count(u32 rmid, struct rmid_read *rr)

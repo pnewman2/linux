@@ -352,6 +352,8 @@ struct rdt_domain *get_domain_from_cpu(int cpu, struct rdt_resource *r)
 {
 	struct rdt_domain *d;
 
+	lockdep_assert_held(&rdtgroup_mutex);
+
 	list_for_each_entry(d, &r->domains, list) {
 		/* Find the domain that contains this CPU */
 		if (cpumask_test_cpu(cpu, &d->cpu_mask))
@@ -613,6 +615,7 @@ static int resctrl_online_cpu(unsigned int cpu)
 	/* The cpu is set in default rdtgroup after online. */
 	cpumask_set_cpu(cpu, &rdtgroup_default.cpu_mask);
 	clear_closid_rmid(cpu);
+	mbm_add_cpu(cpu);
 	mutex_unlock(&rdtgroup_mutex);
 
 	return 0;
@@ -635,6 +638,7 @@ static int resctrl_offline_cpu(unsigned int cpu)
 	struct rdt_resource *r;
 
 	mutex_lock(&rdtgroup_mutex);
+	mbm_remove_cpu(cpu);
 	for_each_capable_rdt_resource(r)
 		domain_remove_cpu(cpu, r);
 	list_for_each_entry(rdtgrp, &rdt_all_groups, rdtgroup_list) {

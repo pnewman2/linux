@@ -307,15 +307,26 @@ struct mbm_state {
 };
 
 /**
- * struct arch_mbm_state - values used to compute resctrl_arch_rmid_read()s
- *			   return value.
+ * struct arch_mbm_state - arch-dependent state for each MBM counter in each
+ * 			   domain
  * @chunks:	Total data moved (multiply by rdt_group.mon_scale to get bytes)
  * @prev_msr:	Value of IA32_QM_CTR last time it was read for the RMID used to
  *		find this struct.
+ * @soft_rmid_bytes: Recent bandwidth count in bytes when using soft RMIDs
+ *
+ * This structure holds state for counters belonging to both hard and soft RMIDs
+ * with the same RMID value. In the case of the hardware RMIDs assigned to CPUs,
+ * the corresponding instances of this struct will be used simultaneously by
+ * the hard and soft counters. The soft and hard RMID spaces are thus
+ * independent.
  */
 struct arch_mbm_state {
-	u64	chunks;
-	u64	prev_msr;
+	/* Hard RMID state */
+	u64		chunks;
+	u64		prev_msr;
+
+	/* Soft RMID state */
+	atomic64_t	soft_rmid_bytes;
 };
 
 /**
@@ -556,5 +567,7 @@ void rdt_domain_reconfigure_cdp(struct rdt_resource *r);
 void __init thread_throttle_mode_init(void);
 void __init mbm_config_rftype_init(const char *config);
 void rdt_staged_configs_clear(void);
+void mbm_add_cpu(unsigned int cpu);
+void mbm_remove_cpu(unsigned int cpu);
 
 #endif /* _ASM_X86_RESCTRL_INTERNAL_H */

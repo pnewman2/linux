@@ -13,6 +13,7 @@
  * @cur_closid:	The cached Class Of Service ID
  * @default_rmid:	The user assigned Resource Monitoring ID
  * @default_closid:	The user assigned cached Class Of Service ID
+ * @cpu_rmid:	The permanently-assigned RMID when using soft monitors
  *
  * The upper 32 bits of MSR_IA32_PQR_ASSOC contain closid and the
  * lower 10 bits rmid. The update to MSR_IA32_PQR_ASSOC always
@@ -27,6 +28,7 @@ struct resctrl_pqr_state {
 	u32			cur_closid;
 	u32			default_rmid;
 	u32			default_closid;
+	u32			cpu_rmid;
 };
 
 DECLARE_PER_CPU(struct resctrl_pqr_state, pqr_state);
@@ -34,6 +36,8 @@ DECLARE_PER_CPU(struct resctrl_pqr_state, pqr_state);
 DECLARE_STATIC_KEY_FALSE(rdt_enable_key);
 DECLARE_STATIC_KEY_FALSE(rdt_alloc_enable_key);
 DECLARE_STATIC_KEY_FALSE(rdt_mon_enable_key);
+
+void resctrl_mbm_flush_cpu(void);
 
 /*
  * __resctrl_sched_in() - Writes the task's CLOSid/RMID to IA32_PQR_MSR
