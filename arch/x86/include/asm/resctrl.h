@@ -13,7 +13,7 @@
  * @cur_closid:	The cached Class Of Service ID
  * @default_rmid:	The user assigned Resource Monitoring ID
  * @default_closid:	The user assigned cached Class Of Service ID
- * @cpu_rmid:	The permanently-assigned RMID when using soft monitors
+ * @cpu_rmid:	The permanently-assigned RMID when using soft RMIDs
  *
  * The upper 32 bits of MSR_IA32_PQR_ASSOC contain closid and the
  * lower 10 bits rmid. The update to MSR_IA32_PQR_ASSOC always
@@ -36,6 +36,7 @@ DECLARE_PER_CPU(struct resctrl_pqr_state, pqr_state);
 DECLARE_STATIC_KEY_FALSE(rdt_enable_key);
 DECLARE_STATIC_KEY_FALSE(rdt_alloc_enable_key);
 DECLARE_STATIC_KEY_FALSE(rdt_mon_enable_key);
+DECLARE_STATIC_KEY_FALSE(rdt_soft_rmid_enable_key);
 
 void resctrl_mbm_flush_cpu(void);
 
@@ -77,9 +78,31 @@ static inline void __resctrl_sched_in(struct task_struct *tsk)
 	}
 
 	if (closid != state->cur_closid || rmid != state->cur_rmid) {
+		if (static_branch_unlikely(&rdt_soft_rmid_enable_key)) {
+			/*
+			 * Flush current event counts to outgoing soft RMID
+			 * when it changes.
+			 */
+			if (rmid != state->cur_rmid)
+				resctrl_mbm_flush_cpu();
+
+			/*
+			 * rmid never changes in this mode, so skip wrmsr if the
+			 * closid is not changing.
+			 */
+			if (closid != state->cur_closid)
+				wrmsr(MSR_IA32_PQR_ASSOC, state->cpu_rmid,
+				      closid);
+		} else
+			/* In this case, rmid is an RMID. */
+			wrmsr(MSR_IA32_PQR_ASSOC, rmid, closid);
+
+		/*
+		 * Record new closid/rmid last so soft RMID case can detect
+		 * changes.
+		 */
 		state->cur_closid = closid;
 		state->cur_rmid = rmid;
-		wrmsr(MSR_IA32_PQR_ASSOC, rmid, closid);
 	}
 }
 
