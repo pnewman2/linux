@@ -594,6 +594,37 @@ static void domain_remove_cpu(int cpu, struct rdt_resource *r)
 	}
 }
 
+/* Assign each CPU an RMID that is unique within its cache domain. */
+static u32 get_rmid_for_cpu(int cpu)
+{
+	struct cpu_cacheinfo *ci = get_cpu_cacheinfo(cpu);
+	struct cacheinfo *l3ci = NULL;
+	u32 rmid;
+	int i;
+
+	/* Locate the cacheinfo for this CPU's L3 cache. */
+	for (i = 0; i < ci->num_leaves; i++) {
+		if (ci->info_list[i].level == 3 &&
+		    (ci->info_list[i].attributes & CACHE_ID)) {
+			l3ci = &ci->info_list[i];
+			break;
+		}
+	}
+
+	if (WARN_ON(!l3ci))
+		return 0;
+
+	/* Use the position of CPU in its shared_cpu_mask as its RMID. */
+	rmid = 0;
+	for_each_cpu(i, &l3ci->shared_cpu_map) {
+		if (i == cpu)
+			break;
+		rmid++;
+	}
+
+	return rmid;
+}
+
 static void clear_closid_rmid(int cpu)
 {
 	struct resctrl_pqr_state *state = this_cpu_ptr(&pqr_state);
@@ -602,7 +633,12 @@ static void clear_closid_rmid(int cpu)
 	state->default_rmid = 0;
 	state->cur_closid = 0;
 	state->cur_rmid = 0;
-	wrmsr(MSR_IA32_PQR_ASSOC, 0, 0);
+	state->cpu_rmid = 0;
+
+	if (static_branch_unlikely(&rdt_soft_rmid_enable_key))
+		state->cpu_rmid = get_rmid_for_cpu(cpu);
+
+	wrmsr(MSR_IA32_PQR_ASSOC, state->cpu_rmid, 0);
 }
 
 static int resctrl_online_cpu(unsigned int cpu)
