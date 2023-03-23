@@ -19,6 +19,9 @@
 #include <linux/kernfs.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
+
+#include <asm/resctrl.h>
+
 #include "internal.h"
 
 /*
@@ -534,7 +537,14 @@ void mon_event_read(struct rmid_read *rr, struct rdt_resource *r,
 	rr->val = 0;
 	rr->first = first;
 
-	smp_call_function_any(&d->cpu_mask, mon_event_count, rr, 1);
+	if (static_branch_unlikely(&rdt_soft_rmid_enable_key))
+		/*
+		 * Soft RMIDs reside in memory, so they can be read from
+		 * anywhere.
+		 */
+		mon_event_count(rr);
+	else
+		smp_call_function_any(&d->cpu_mask, mon_event_count, rr, 1);
 }
 
 int rdtgroup_mondata_show(struct seq_file *m, void *arg)
