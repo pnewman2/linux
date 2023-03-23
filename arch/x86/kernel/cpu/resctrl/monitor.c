@@ -559,7 +559,50 @@ void resctrl_mbm_flush_cpu(void)
 		__mbm_flush(QOS_L3_MBM_TOTAL_EVENT_ID, r);
 }
 
-static int __mon_event_count(u32 rmid, struct rmid_read *rr)
+u64 resctrl_arch_read_soft_counter(struct rdt_domain *d, u32 soft_rmid,
+				   enum resctrl_event_id evtid)
+{
+	struct rdt_hw_domain *hw_dom = resctrl_to_arch_dom(d);
+	struct arch_mbm_state *am = get_arch_mbm_state(hw_dom, soft_rmid,
+						       evtid);
+
+	if (WARN_ON(!am))
+		/* !is_mbm_event() */
+		return 0;
+
+	return atomic64_read(&am->soft_rmid_bytes);
+}
+
+void resctrl_arch_reset_soft_counter(struct rdt_domain *d, u32 soft_rmid,
+				     enum resctrl_event_id evtid)
+{
+	struct rdt_hw_domain *hw_dom = resctrl_to_arch_dom(d);
+	struct arch_mbm_state *am = get_arch_mbm_state(hw_dom, soft_rmid,
+						       evtid);
+
+	if (WARN_ON(!am))
+		/* !is_mbm_event() */
+		return;
+
+	/*
+	 * Discard any bandwidth resulting from the initial HW counter
+	 * reads.
+	 */
+	atomic64_set(&am->soft_rmid_bytes, 0);
+}
+
+static int __mon_event_count_soft_rmid(u32 soft_rmid, struct rmid_read *rr)
+{
+	if (rr->first)
+		resctrl_arch_reset_soft_counter(rr->d, soft_rmid, rr->evtid);
+	else
+		rr->val += resctrl_arch_read_soft_counter(rr->d, soft_rmid,
+							  rr->evtid);
+
+	return 0;
+}
+
+static int __mon_event_count_default(u32 rmid, struct rmid_read *rr)
 {
 	struct mbm_state *m;
 	u64 tval = 0;
@@ -579,6 +622,19 @@ static int __mon_event_count(u32 rmid, struct rmid_read *rr)
 	rr->val += tval;
 
 	return 0;
+}
+
+/**
+ * Callers of __mon_event_count() do not need to be aware of whether @rmid
+ * refers to a hard or soft RMID. __mon_event_count_{default,soft_rmid}() mark
+ * the boundary where the implementation must assume the type of @rmid.
+ */
+static int __mon_event_count(u32 rmid, struct rmid_read *rr)
+{
+	if (!static_branch_likely(&rdt_soft_rmid_enable_key))
+		return __mon_event_count_default(rmid, rr);
+	else
+		return __mon_event_count_soft_rmid(rmid, rr);
 }
 
 /*

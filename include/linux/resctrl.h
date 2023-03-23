@@ -225,7 +225,7 @@ void resctrl_offline_domain(struct rdt_resource *r, struct rdt_domain *d);
  *			      for this resource and domain.
  * @r:			resource that the counter should be read from.
  * @d:			domain that the counter should be read from.
- * @rmid:		rmid of the counter to read.
+ * @rmid:		hardware rmid of the counter to read.
  * @eventid:		eventid to read, e.g. L3 occupancy.
  * @val:		result of the counter read in bytes.
  *
@@ -242,7 +242,7 @@ int resctrl_arch_rmid_read(struct rdt_resource *r, struct rdt_domain *d,
  *			       and eventid.
  * @r:		The domain's resource.
  * @d:		The rmid's domain.
- * @rmid:	The rmid whose counter values should be reset.
+ * @rmid:	The hardware rmid whose counter values should be reset.
  * @eventid:	The eventid whose counter values should be reset.
  *
  * This can be called from any CPU.
@@ -263,5 +263,27 @@ void resctrl_arch_reset_rmid_all(struct rdt_resource *r, struct rdt_domain *d);
 
 extern unsigned int resctrl_rmid_realloc_threshold;
 extern unsigned int resctrl_rmid_realloc_limit;
+
+struct mongroup;
+
+/**
+ * resctrl_arch_read_soft_counter() - reads the current event count from a
+ *				      software monitor
+ * @d:		The monitor's domain
+ * @soft_rmid:	The RMID of a soft counter
+ * @eventid:	Which event counter to read
+ */
+u64 resctrl_arch_read_soft_counter(struct rdt_domain *d, u32 soft_rmid,
+				   enum resctrl_event_id evtid);
+
+/**
+ * resctrl_arch_reset_soft_counter() - resets an event counter in a software
+ *				       monitor
+ * @d:		The monitor's domain
+ * @soft_rmid:	The RMID of a soft counter
+ * @eventid:	Which event counter to reset
+ */
+void resctrl_arch_reset_soft_counter(struct rdt_domain *d, u32 soft_rmid,
+				     enum resctrl_event_id evtid);
 
 #endif /* _RESCTRL_H */
