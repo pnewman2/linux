@@ -591,6 +591,11 @@ void resctrl_arch_reset_soft_counter(struct rdt_domain *d, u32 soft_rmid,
 	atomic64_set(&am->soft_rmid_bytes, 0);
 }
 
+static void mbm_flush_cpu_handler(void *p)
+{
+	resctrl_mbm_flush_cpu();
+}
+
 static int __mon_event_count_soft_rmid(u32 soft_rmid, struct rmid_read *rr)
 {
 	if (rr->first)
@@ -902,6 +907,19 @@ void mbm_handle_overflow(struct work_struct *work)
 
 	r = &rdt_resources_all[RDT_RESOURCE_L3].r_resctrl;
 	d = container_of(work, struct rdt_domain, mbm_over.work);
+
+	if (static_branch_unlikely(&rdt_soft_rmid_enable_key)) {
+		/*
+		 * Flush the local domain so mbm_update() sees current counter
+		 * values.
+		 *
+		 * __mon_event_count_soft_rmid() relies on this flush for
+		 * counter updates reflecting bandwidth since the last context
+		 * switch on each CPU.
+		 */
+		on_each_cpu_mask(&d->cpu_mask, mbm_flush_cpu_handler, NULL,
+				 true);
+	}
 
 	list_for_each_entry(prgrp, &rdt_all_groups, rdtgroup_list) {
 		mbm_update(r, d, prgrp->mon.rmid);
