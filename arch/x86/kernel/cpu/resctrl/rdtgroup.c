@@ -1013,6 +1013,8 @@ static int rdt_mon_features_show(struct kernfs_open_file *of,
 	struct mon_evt *mevt;
 
 	list_for_each_entry(mevt, &r->evt_list, list) {
+		if (mevt->disabled)
+			continue;
 		seq_printf(seq, "%s\n", mevt->name);
 		if (mevt->configurable)
 			seq_printf(seq, "%s_config\n", mevt->name);
@@ -2228,6 +2230,35 @@ static int set_mba_sc(bool mba_sc)
 	return 0;
 }
 
+static bool supports_mbm_soft_rmid(void)
+{
+	return is_mbm_enabled();
+}
+
+static int set_mbm_soft_rmid(bool mbm_soft_rmid)
+{
+	struct rdt_resource *r = &rdt_resources_all[RDT_RESOURCE_L3].r_resctrl;
+	struct mon_evt *mevt = NULL;
+
+	/*
+	 * is_llc_occupancy_enabled() will always return false when disabling,
+	 * so search for the llc_occupancy event unconditionally.
+	 */
+	list_for_each_entry(mevt, &r->evt_list, list) {
+		if (strcmp(mevt->name, "llc_occupancy") == 0) {
+			mevt->disabled = mbm_soft_rmid;
+			break;
+		}
+	}
+
+	if (mbm_soft_rmid)
+		static_branch_enable_cpuslocked(&rdt_soft_rmid_enable_key);
+	else
+		static_branch_disable_cpuslocked(&rdt_soft_rmid_enable_key);
+
+	return 0;
+}
+
 static int cdp_enable(int level)
 {
 	struct rdt_resource *r_l = &rdt_resources_all[level].r_resctrl;
@@ -2358,6 +2389,9 @@ static int rdt_enable_ctx(struct rdt_fs_context *ctx)
 
 	if (!ret && ctx->enable_mba_mbps)
 		ret = set_mba_sc(true);
+
+	if (!ret && ctx->enable_mbm_soft_rmid)
+		ret = set_mbm_soft_rmid(true);
 
 	return ret;
 }
@@ -2534,6 +2568,8 @@ out_schemata_free:
 out_mba:
 	if (ctx->enable_mba_mbps)
 		set_mba_sc(false);
+	if (ctx->enable_mbm_soft_rmid)
+		set_mbm_soft_rmid(false);
 out_cdp:
 	cdp_disable_all();
 out:
@@ -2547,6 +2583,7 @@ enum rdt_param {
 	Opt_cdp,
 	Opt_cdpl2,
 	Opt_mba_mbps,
+	Opt_mbm_soft_rmid,
 	nr__rdt_params
 };
 
@@ -2554,6 +2591,7 @@ static const struct fs_parameter_spec rdt_fs_parameters[] = {
 	fsparam_flag("cdp",		Opt_cdp),
 	fsparam_flag("cdpl2",		Opt_cdpl2),
 	fsparam_flag("mba_MBps",	Opt_mba_mbps),
+	fsparam_flag("mbm_soft_rmid",	Opt_mbm_soft_rmid),
 	{}
 };
 
@@ -2578,6 +2616,11 @@ static int rdt_parse_param(struct fs_context *fc, struct fs_parameter *param)
 		if (!supports_mba_mbps())
 			return -EINVAL;
 		ctx->enable_mba_mbps = true;
+		return 0;
+	case Opt_mbm_soft_rmid:
+		if (!supports_mbm_soft_rmid())
+			return -EINVAL;
+		ctx->enable_mbm_soft_rmid = true;
 		return 0;
 	}
 
@@ -2767,6 +2810,7 @@ static void rdt_kill_sb(struct super_block *sb)
 	cpus_read_lock();
 	mutex_lock(&rdtgroup_mutex);
 
+	set_mbm_soft_rmid(false);
 	set_mba_sc(false);
 
 	/*Put everything back to default values. */
@@ -2861,6 +2905,8 @@ static int mkdir_mondata_subdir(struct kernfs_node *parent_kn,
 	priv.u.rid = r->rid;
 	priv.u.domid = d->id;
 	list_for_each_entry(mevt, &r->evt_list, list) {
+		if (mevt->disabled)
+			continue;
 		priv.u.evtid = mevt->evtid;
 		ret = mon_addfile(kn, mevt->name, priv.priv);
 		if (ret)
@@ -3516,6 +3562,9 @@ static int rdtgroup_show_options(struct seq_file *seq, struct kernfs_root *kf)
 
 	if (is_mba_sc(&rdt_resources_all[RDT_RESOURCE_MBA].r_resctrl))
 		seq_puts(seq, ",mba_MBps");
+
+	if (static_branch_likely(&rdt_soft_rmid_enable_key))
+		seq_puts(seq, ",mbm_soft_rmid");
 
 	return 0;
 }

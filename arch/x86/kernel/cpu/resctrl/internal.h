@@ -2,6 +2,7 @@
 #ifndef _ASM_X86_RESCTRL_INTERNAL_H
 #define _ASM_X86_RESCTRL_INTERNAL_H
 
+#include "linux/types.h"
 #include <linux/resctrl.h>
 #include <linux/sched.h>
 #include <linux/kernfs.h>
@@ -59,6 +60,7 @@ struct rdt_fs_context {
 	bool				enable_cdpl2;
 	bool				enable_cdpl3;
 	bool				enable_mba_mbps;
+	bool				enable_mbm_soft_rmid;
 };
 
 static inline struct rdt_fs_context *rdt_fc2context(struct fs_context *fc)
@@ -76,12 +78,14 @@ DECLARE_STATIC_KEY_FALSE(rdt_mon_enable_key);
  * @evtid:		event id
  * @name:		name of the event
  * @configurable:	true if the event is configurable
+ * @disabled:		true if event is disabled
  * @list:		entry in &rdt_resource->evt_list
  */
 struct mon_evt {
 	enum resctrl_event_id	evtid;
 	char			*name;
 	bool			configurable;
+	bool			disabled;
 	struct list_head	list;
 };
 
