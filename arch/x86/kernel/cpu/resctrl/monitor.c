@@ -226,6 +226,15 @@ void resctrl_arch_reset_rmid(struct rdt_resource *r, struct rdt_domain *d,
 
 	am = get_arch_mbm_state(hw_dom, rmid, eventid);
 	if (am) {
+		/*
+		 * For soft RMIDs, only reset the soft counter. The hard RMID
+		 * state may be actively used by a CPU.
+		 */
+		if (static_branch_unlikely(&rdt_soft_rmid_enable_key)) {
+			atomic64_set(&am->soft_rmid_bytes, 0);
+			return;
+		}
+
 		memset(am, 0, sizeof(*am));
 
 		/* Record any initial, non-zero count value. */
@@ -258,8 +267,8 @@ static u64 mbm_overflow_count(u64 prev_msr, u64 cur_msr, unsigned int width)
 	return chunks >> shift;
 }
 
-int resctrl_arch_rmid_read(struct rdt_resource *r, struct rdt_domain *d,
-			   u32 rmid, enum resctrl_event_id eventid, u64 *val)
+static int hard_rmid_read(struct rdt_resource *r, struct rdt_domain *d,
+			  u32 rmid, enum resctrl_event_id eventid, u64 *val)
 {
 	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
 	struct rdt_hw_domain *hw_dom = resctrl_to_arch_dom(d);
@@ -287,6 +296,40 @@ int resctrl_arch_rmid_read(struct rdt_resource *r, struct rdt_domain *d,
 	*val = chunks * hw_res->mon_scale;
 
 	return 0;
+}
+
+static int soft_rmid_read(struct rdt_resource *r, struct rdt_domain *d,
+			  u32 rmid, enum resctrl_event_id evtid, u64 *val)
+{
+	struct rdt_hw_domain *hw_dom = resctrl_to_arch_dom(d);
+	struct arch_mbm_state *am = get_arch_mbm_state(hw_dom, rmid, evtid);
+
+	/*
+	 * Cache occupancy events are not supported in this mode. However,
+	 * __check_limbo() uses this counter to determine whether to place RMIDs
+	 * on the limbo list, which wouldn't be applicable to soft RMIDs.
+	 * Always returning 0 is a handy way to keep soft RMIDs off of the limbo
+	 * list.
+	 */
+	if (evtid == QOS_L3_OCCUP_EVENT_ID) {
+		*val = 0;
+		return 0;
+	}
+
+	if (WARN_ON(!am))
+		/* !is_mbm_event() */
+		return 0;
+
+	return atomic64_read(&am->soft_rmid_bytes);
+}
+
+int resctrl_arch_rmid_read(struct rdt_resource *r, struct rdt_domain *d,
+			   u32 rmid, enum resctrl_event_id eventid, u64 *val)
+{
+	if (!static_branch_likely(&rdt_soft_rmid_enable_key))
+		return hard_rmid_read(r, d, rmid, eventid, val);
+	else
+		return soft_rmid_read(r, d, rmid, eventid, val);
 }
 
 /*
@@ -489,8 +532,7 @@ static void __mbm_flush(int evtid, struct rdt_resource *r)
 	if (!am)
 		return;
 
-	if (resctrl_arch_rmid_read(r, &state->domain->d_resctrl, rmid,
-	    evtid, &val))
+	if (hard_rmid_read(r, &state->domain->d_resctrl, rmid, evtid, &val))
 		return;
 
 	/*
