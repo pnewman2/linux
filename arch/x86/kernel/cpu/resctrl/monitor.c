@@ -357,6 +357,11 @@ void __check_limbo(struct rdt_domain *d, bool force_free)
 		if (nrmid >= r->num_rmid)
 			break;
 
+		/*
+		 * The limbo list must always be empty when soft RMIDs are
+		 * enabled.
+		 */
+		WARN_ON_ONCE(static_branch_unlikely(&rdt_soft_rmid_enable_key));
 		entry = __rmid_entry(nrmid);
 
 		if (resctrl_arch_rmid_read(r, d, entry->rmid,
@@ -409,6 +414,13 @@ static void add_rmid_to_limbo(struct rmid_entry *entry)
 	struct rdt_domain *d;
 	int cpu, err;
 	u64 val = 0;
+
+	/*
+	 * Soft RMIDs must never be placed on the limbo list. Ones that match a
+	 * cpu_rmid will likely stay there forever.
+	 */
+	if (static_branch_unlikely(&rdt_soft_rmid_enable_key))
+		return;
 
 	entry->busy = 0;
 	cpu = get_cpu();
