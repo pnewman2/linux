@@ -388,8 +388,11 @@ void __resctrl_sched_in(struct task_struct *tsk)
 				 * by a full barrier and synchronous IPI
 				 * broadcast before proceeding to free the
 				 * group.
+				 *
+				 * parent can be concurrently updated to a new
+				 * group as a result of mongrp_reparent().
 				 */
-				closid = rgrp->mon.parent->closid;
+				closid = READ_ONCE(rgrp->mon.parent)->closid;
 		} else {
 			closid = rgrp->closid;
 		}
@@ -3809,8 +3812,7 @@ out:
  * Monitoring data for the group is unaffected by this operation.
  */
 static void mongrp_reparent(struct rdtgroup *rdtgrp,
-			    struct rdtgroup *new_prdtgrp,
-			    cpumask_var_t cpus)
+			    struct rdtgroup *new_prdtgrp)
 {
 	struct rdtgroup *prdtgrp = rdtgrp->mon.parent;
 
@@ -3825,13 +3827,10 @@ static void mongrp_reparent(struct rdtgroup *rdtgrp,
 	list_move_tail(&rdtgrp->mon.crdtgrp_list,
 		       &new_prdtgrp->mon.crdtgrp_list);
 
-	rdtgrp->mon.parent = new_prdtgrp;
+	WRITE_ONCE(rdtgrp->mon.parent, new_prdtgrp);
 	rdtgrp->closid = new_prdtgrp->closid;
 
-	/* Propagate updated closid to all tasks in this group. */
-	rdt_move_group_tasks(rdtgrp, rdtgrp, cpus);
-
-	update_closid_rmid(cpus, NULL);
+	update_closid_rmid(cpu_online_mask, NULL);
 }
 
 static int rdtgroup_rename(struct kernfs_node *kn,
@@ -3839,7 +3838,6 @@ static int rdtgroup_rename(struct kernfs_node *kn,
 {
 	struct rdtgroup *new_prdtgrp;
 	struct rdtgroup *rdtgrp;
-	cpumask_var_t tmpmask;
 	int ret;
 
 	rdtgrp = kernfs_to_rdtgroup(kn);
@@ -3910,16 +3908,6 @@ static int rdtgroup_rename(struct kernfs_node *kn,
 	}
 
 	/*
-	 * Allocate the cpumask for use in mongrp_reparent() to avoid the
-	 * possibility of failing to allocate it after kernfs_rename() has
-	 * succeeded.
-	 */
-	if (!zalloc_cpumask_var(&tmpmask, GFP_KERNEL)) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	/*
 	 * Perform all input validation and allocations needed to ensure
 	 * mongrp_reparent() will succeed before calling kernfs_rename(),
 	 * otherwise it would be necessary to revert this call if
@@ -3927,9 +3915,7 @@ static int rdtgroup_rename(struct kernfs_node *kn,
 	 */
 	ret = kernfs_rename(kn, new_parent, new_name);
 	if (!ret)
-		mongrp_reparent(rdtgrp, new_prdtgrp, tmpmask);
-
-	free_cpumask_var(tmpmask);
+		mongrp_reparent(rdtgrp, new_prdtgrp);
 
 out:
 	mutex_unlock(&rdtgroup_mutex);
