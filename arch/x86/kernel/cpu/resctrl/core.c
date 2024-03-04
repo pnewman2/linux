@@ -600,8 +600,7 @@ static void clear_closid_rmid(int cpu)
 {
 	struct resctrl_pqr_state *state = this_cpu_ptr(&pqr_state);
 
-	state->default_closid = RESCTRL_RESERVED_CLOSID;
-	state->default_rmid = RESCTRL_RESERVED_RMID;
+	state->default_group = &rdtgroup_default;
 	state->cur_closid = RESCTRL_RESERVED_CLOSID;
 	state->cur_rmid = RESCTRL_RESERVED_RMID;
 	wrmsr(MSR_IA32_PQR_ASSOC, RESCTRL_RESERVED_RMID,

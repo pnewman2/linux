@@ -1236,8 +1236,7 @@ struct task_struct {
 	struct list_head		cg_list;
 #endif
 #ifdef CONFIG_X86_CPU_RESCTRL
-	u32				closid;
-	u32				rmid;
+	struct rdtgroup			*rdt_group;
 #endif
 #ifdef CONFIG_FUTEX
 	struct robust_list_head __user	*robust_list;

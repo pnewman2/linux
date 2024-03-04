@@ -334,14 +334,8 @@ struct rftype {
 /**
  * struct resctrl_pqr_state - State cache for the PQR MSR
  * @cur_rmid:		The cached Resource Monitoring ID
- * @cur_closid:	The cached Class Of Service ID
- * @default_rmid:	The user assigned Resource Monitoring ID
- * @default_closid:	The user assigned cached Class Of Service ID
- *
- * The upper 32 bits of MSR_IA32_PQR_ASSOC contain closid and the
- * lower 10 bits rmid. The update to MSR_IA32_PQR_ASSOC always
- * contains both parts, so we need to cache them. This also
- * stores the user configured per cpu CLOSID and RMID.
+ * @cur_closid:		The cached Class Of Service ID
+ * @default_group:	The user assigned rdtgroup
  *
  * The cache also helps to avoid pointless updates if the value does
  * not change.
@@ -349,8 +343,7 @@ struct rftype {
 struct resctrl_pqr_state {
 	u32			cur_rmid;
 	u32			cur_closid;
-	u32			default_rmid;
-	u32			default_closid;
+	struct rdtgroup		*default_group;
 };
 
 DECLARE_PER_CPU(struct resctrl_pqr_state, pqr_state);

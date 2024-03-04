@@ -348,25 +348,55 @@ static int rdtgroup_cpus_show(struct kernfs_open_file *of,
 void __resctrl_sched_in(struct task_struct *tsk)
 {
 	struct resctrl_pqr_state *state = this_cpu_ptr(&pqr_state);
-	u32 closid = state->default_closid;
-	u32 rmid = state->default_rmid;
-	u32 tmp;
+	u32 closid = state->cur_closid;
+	u32 rmid = state->cur_rmid;
+	struct rdtgroup *rgrp;
 
 	/*
-	 * If this task has a closid/rmid assigned, use it.
-	 * Else use the closid/rmid assigned to this cpu.
+	 * A task's group assignment can change concurrently, but the CLOSID or
+	 * RMID assigned to a group cannot change.
 	 */
+	rgrp = READ_ONCE(tsk->rdt_group);
+	if (!rgrp || rgrp == &rdtgroup_default)
+		/*
+		 * If this task is a member of a control or monitoring group,
+		 * use the IDs assigned to these groups. Else use the
+		 * closid/rmid assigned to this cpu.
+		 */
+		rgrp = state->default_group;
+
+	/*
+	 * Context switches are possible before the cpuonline handler
+	 * initializes default_group.
+	 */
+	if (!rgrp)
+		rgrp = &rdtgroup_default;
+
 	if (static_branch_likely(&rdt_alloc_enable_key)) {
-		tmp = READ_ONCE(tsk->closid);
-		if (tmp)
-			closid = tmp;
+		/*
+		 * If the task is assigned to a monitoring group, the CLOSID is
+		 * determined by the parent control group.
+		 */
+		if (rgrp->type == RDTMON_GROUP) {
+			if (!WARN_ON(!rgrp->mon.parent))
+				/*
+				 * The parent rdtgroup cannot be freed until
+				 * after the mon group is freed. In the event
+				 * that the parent rdtgroup is removed (by
+				 * rdtgroup_rmdir_ctrl()), rdt_mon_group would
+				 * be redirected to rdtgroup_default, followed
+				 * by a full barrier and synchronous IPI
+				 * broadcast before proceeding to free the
+				 * group.
+				 */
+				closid = rgrp->mon.parent->closid;
+		} else {
+			closid = rgrp->closid;
+		}
 	}
 
-	if (static_branch_likely(&rdt_mon_enable_key)) {
-		tmp = READ_ONCE(tsk->rmid);
-		if (tmp)
-			rmid = tmp;
-	}
+	if (static_branch_likely(&rdt_mon_enable_key))
+		rmid = rgrp->mon.rmid;
 
 	if (closid != state->cur_closid || rmid != state->cur_rmid) {
 		state->cur_closid = closid;
@@ -385,10 +415,8 @@ static void update_cpu_closid_rmid(void *info)
 {
 	struct rdtgroup *r = info;
 
-	if (r) {
-		this_cpu_write(pqr_state.default_closid, r->closid);
-		this_cpu_write(pqr_state.default_rmid, r->mon.rmid);
-	}
+	if (r)
+		this_cpu_write(pqr_state.default_group, r);
 
 	/*
 	 * We cannot unconditionally write the MSR because the current
@@ -624,49 +652,61 @@ static void update_task_closid_rmid(struct task_struct *t)
 
 static bool task_in_rdtgroup(struct task_struct *tsk, struct rdtgroup *rdtgrp)
 {
-	u32 closid, rmid = rdtgrp->mon.rmid;
+	struct rdtgroup *task_group = READ_ONCE(tsk->rdt_group);
 
-	if (rdtgrp->type == RDTCTRL_GROUP)
-		closid = rdtgrp->closid;
-	else if (rdtgrp->type == RDTMON_GROUP)
-		closid = rdtgrp->mon.parent->closid;
-	else
-		return false;
+	lockdep_assert_held(&rdtgroup_mutex);
 
-	return resctrl_arch_match_closid(tsk, closid) &&
-	       resctrl_arch_match_rmid(tsk, closid, rmid);
+	/* Uninitalized rdt_group pointer implies rdtgroup_default. */
+	if (!task_group)
+		task_group = &rdtgroup_default;
+
+	if (rdtgrp == task_group)
+		return true;
+
+	/* Tasks in child mongroups are members of the parent ctrlmon group. */
+	if (task_group->type == RDTMON_GROUP &&
+	    task_group->mon.parent == rdtgrp)
+		return true;
+
+	return false;
 }
 
 static int __rdtgroup_move_task(struct task_struct *tsk,
 				struct rdtgroup *rdtgrp)
 {
+	struct rdtgroup *task_group = READ_ONCE(tsk->rdt_group);
+
 	/* If the task is already in rdtgrp, no need to move the task. */
 	if (task_in_rdtgroup(tsk, rdtgrp))
 		return 0;
 
 	/*
-	 * Set the task's closid/rmid before the PQR_ASSOC MSR can be
-	 * updated by them.
+	 * NULL is used in the task_struct so it can be overridden by a CPU's
+	 * default_group
+	 */
+	if (!task_group)
+		task_group = &rdtgroup_default;
+
+	/*
+	 * Set the task's group before the CPU can be updated by them.
 	 *
 	 * For ctrl_mon groups, move both closid and rmid.
 	 * For monitor groups, can move the tasks only from
-	 * their parent CTRL group.
+	 * their parent CTRL group or another mon group under the same parent.
 	 */
-	if (rdtgrp->type == RDTMON_GROUP &&
-	    !resctrl_arch_match_closid(tsk, rdtgrp->mon.parent->closid)) {
+	if (rdtgrp->type == RDTCTRL_GROUP) {
+		WRITE_ONCE(tsk->rdt_group, rdtgrp);
+	} else if (rdtgrp->type == RDTMON_GROUP &&
+		   (task_group == rdtgrp->mon.parent ||
+		    task_group->mon.parent == rdtgrp->mon.parent)) {
+		WRITE_ONCE(tsk->rdt_group, rdtgrp);
+	} else {
 		rdt_last_cmd_puts("Can't move task to different control group\n");
 		return -EINVAL;
 	}
 
-	if (rdtgrp->type == RDTMON_GROUP)
-		resctrl_arch_set_closid_rmid(tsk, rdtgrp->mon.parent->closid,
-					     rdtgrp->mon.rmid);
-	else
-		resctrl_arch_set_closid_rmid(tsk, rdtgrp->closid,
-					     rdtgrp->mon.rmid);
-
 	/*
-	 * Ensure the task's closid and rmid are written before determining if
+	 * Ensure the task's group is written before determining if
 	 * the task is current that will decide if it will be interrupted.
 	 * This pairs with the full barrier between the rq->curr update and
 	 * resctrl_sched_in() during context switch.
@@ -684,19 +724,6 @@ static int __rdtgroup_move_task(struct task_struct *tsk,
 	return 0;
 }
 
-static bool is_closid_match(struct task_struct *t, struct rdtgroup *r)
-{
-	return (resctrl_arch_alloc_capable() && (r->type == RDTCTRL_GROUP) &&
-		resctrl_arch_match_closid(t, r->closid));
-}
-
-static bool is_rmid_match(struct task_struct *t, struct rdtgroup *r)
-{
-	return (resctrl_arch_mon_capable() && (r->type == RDTMON_GROUP) &&
-		resctrl_arch_match_rmid(t, r->mon.parent->closid,
-					r->mon.rmid));
-}
-
 /**
  * rdtgroup_tasks_assigned - Test if tasks have been assigned to resource group
  * @r: Resource group
@@ -712,7 +739,7 @@ int rdtgroup_tasks_assigned(struct rdtgroup *r)
 
 	rcu_read_lock();
 	for_each_process_thread(p, t) {
-		if (is_closid_match(t, r) || is_rmid_match(t, r)) {
+		if (task_in_rdtgroup(t, r)) {
 			ret = 1;
 			break;
 		}
@@ -830,7 +857,7 @@ static void show_rdt_tasks(struct rdtgroup *r, struct seq_file *s)
 
 	rcu_read_lock();
 	for_each_process_thread(p, t) {
-		if (is_closid_match(t, r) || is_rmid_match(t, r)) {
+		if (task_in_rdtgroup(t, r)) {
 			pid = task_pid_vnr(t);
 			if (pid)
 				seq_printf(s, "%d\n", pid);
@@ -924,53 +951,34 @@ int proc_resctrl_show(struct seq_file *s, struct pid_namespace *ns,
 		      struct pid *pid, struct task_struct *tsk)
 {
 	struct rdtgroup *rdtg;
-	int ret = 0;
-
-	mutex_lock(&rdtgroup_mutex);
+	struct rdtgroup *crg;
+	struct rdtgroup *mrg;
 
 	/* Return empty if resctrl has not been mounted. */
 	if (!resctrl_mounted) {
 		seq_puts(s, "res:\nmon:\n");
-		goto unlock;
+		return 0;
 	}
 
-	list_for_each_entry(rdtg, &rdt_all_groups, rdtgroup_list) {
-		struct rdtgroup *crg;
+	mutex_lock(&rdtgroup_mutex);
 
-		/*
-		 * Task information is only relevant for shareable
-		 * and exclusive groups.
-		 */
-		if (rdtg->mode != RDT_MODE_SHAREABLE &&
-		    rdtg->mode != RDT_MODE_EXCLUSIVE)
-			continue;
+	rdtg = READ_ONCE(tsk->rdt_group);
+	if (!rdtg)
+		rdtg = &rdtgroup_default;
 
-		if (!resctrl_arch_match_closid(tsk, rdtg->closid))
-			continue;
+	mrg = rdtg;
+	crg = rdtg;
+	if (rdtg->type == RDTMON_GROUP)
+		crg = rdtg->mon.parent;
 
-		seq_printf(s, "res:%s%s\n", (rdtg == &rdtgroup_default) ? "/" : "",
-			   rdtg->kn->name);
-		seq_puts(s, "mon:");
-		list_for_each_entry(crg, &rdtg->mon.crdtgrp_list,
-				    mon.crdtgrp_list) {
-			if (!resctrl_arch_match_rmid(tsk, crg->mon.parent->closid,
-						     crg->mon.rmid))
-				continue;
-			seq_printf(s, "%s", crg->kn->name);
-			break;
-		}
-		seq_putc(s, '\n');
-		goto unlock;
-	}
-	/*
-	 * The above search should succeed. Otherwise return
-	 * with an error.
-	 */
-	ret = -ENOENT;
-unlock:
+	seq_printf(s, "res:%s%s\n", (crg == &rdtgroup_default) ? "/" : "",
+		   crg->kn->name);
+	seq_printf(s, "mon:%s%s\n", (mrg == &rdtgroup_default) ? "/" : "",
+		   mrg->kn->name);
+
 	mutex_unlock(&rdtgroup_mutex);
 
-	return ret;
+	return 0;
 }
 #endif
 
@@ -2904,13 +2912,11 @@ static void rdt_move_group_tasks(struct rdtgroup *from, struct rdtgroup *to,
 
 	read_lock(&tasklist_lock);
 	for_each_process_thread(p, t) {
-		if (!from || is_closid_match(t, from) ||
-		    is_rmid_match(t, from)) {
-			resctrl_arch_set_closid_rmid(t, to->closid,
-						     to->mon.rmid);
+		if (!from || task_in_rdtgroup(t, from)) {
+			WRITE_ONCE(t->rdt_group, to);
 
 			/*
-			 * Order the closid/rmid stores above before the loads
+			 * Order the group store above before the loads
 			 * in task_curr(). This pairs with the full barrier
 			 * between the rq->curr update and resctrl_sched_in()
 			 * during context switch.
@@ -2939,6 +2945,7 @@ static void rdt_move_group_tasks(struct rdtgroup *from, struct rdtgroup *to,
  */
 void exit_resctrl(struct task_struct *tsk)
 {
+	WRITE_ONCE(tsk->rdt_group, &rdtgroup_default);
 }
 
 static void free_all_child_rdtgrp(struct rdtgroup *rdtgrp)
@@ -3681,7 +3688,7 @@ static int rdtgroup_rmdir_mon(struct rdtgroup *rdtgrp, cpumask_var_t tmpmask)
 
 	/* Update per cpu rmid of the moved CPUs first */
 	for_each_cpu(cpu, &rdtgrp->cpu_mask)
-		per_cpu(pqr_state.default_rmid, cpu) = prdtgrp->mon.rmid;
+		per_cpu(pqr_state.default_group, cpu) = prdtgrp;
 	/*
 	 * Update the MSR on moved CPUs and CPUs which have moved
 	 * task running on them.
@@ -3724,10 +3731,8 @@ static int rdtgroup_rmdir_ctrl(struct rdtgroup *rdtgrp, cpumask_var_t tmpmask)
 		   &rdtgroup_default.cpu_mask, &rdtgrp->cpu_mask);
 
 	/* Update per cpu closid and rmid of the moved CPUs first */
-	for_each_cpu(cpu, &rdtgrp->cpu_mask) {
-		per_cpu(pqr_state.default_closid, cpu) = rdtgroup_default.closid;
-		per_cpu(pqr_state.default_rmid, cpu) = rdtgroup_default.mon.rmid;
-	}
+	for_each_cpu(cpu, &rdtgrp->cpu_mask)
+		per_cpu(pqr_state.default_group, cpu) = &rdtgroup_default;
 
 	/*
 	 * Update the MSR on moved CPUs and CPUs which have moved

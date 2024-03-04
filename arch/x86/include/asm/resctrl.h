@@ -64,24 +64,6 @@ static inline unsigned int resctrl_arch_round_mon_val(unsigned int val)
 	return val * scale;
 }
 
-static inline void resctrl_arch_set_closid_rmid(struct task_struct *tsk,
-						u32 closid, u32 rmid)
-{
-	WRITE_ONCE(tsk->closid, closid);
-	WRITE_ONCE(tsk->rmid, rmid);
-}
-
-static inline bool resctrl_arch_match_closid(struct task_struct *tsk, u32 closid)
-{
-	return READ_ONCE(tsk->closid) == closid;
-}
-
-static inline bool resctrl_arch_match_rmid(struct task_struct *tsk, u32 ignored,
-					   u32 rmid)
-{
-	return READ_ONCE(tsk->rmid) == rmid;
-}
-
 static inline u32 resctrl_arch_system_num_rmid_idx(void)
 {
 	/* RMID are independent numbers for x86. num_rmid_idx == num_rmid */
