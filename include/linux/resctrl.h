@@ -304,4 +304,25 @@ void resctrl_arch_reset_rmid_all(struct rdt_resource *r, struct rdt_domain *d);
 extern unsigned int resctrl_rmid_realloc_threshold;
 extern unsigned int resctrl_rmid_realloc_limit;
 
+DECLARE_STATIC_KEY_FALSE(rdt_enable_key);
+
+void __resctrl_sched_in(struct task_struct *tsk);
+
+/*
+ * resctrl_sched_in() - Assigns the incoming task's control/monitor IDs to the
+ *			current CPU
+ *
+ * To minimize impact to the scheduler hot path, this will stay as no-op unless
+ * running on a system supporting resctrl and the filesystem is mounted.
+ *
+ * Must be called with preemption disabled.
+ */
+static inline void resctrl_sched_in(struct task_struct *tsk)
+{
+#ifdef CONFIG_X86_CPU_RESCTRL
+	if (static_branch_likely(&rdt_enable_key))
+		__resctrl_sched_in(tsk);
+#endif
+}
+
 #endif /* _RESCTRL_H */

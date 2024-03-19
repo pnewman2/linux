@@ -335,6 +335,47 @@ static int rdtgroup_cpus_show(struct kernfs_open_file *of,
 }
 
 /*
+ * __resctrl_sched_in() - Writes the task's control and monitor IDs into the CPU
+ *
+ * Following considerations are made so that this has minimal impact
+ * on scheduler hot path:
+ * - Caches the per cpu CLOSid/RMID values and does the MSR write only
+ *   when a task with a different CLOSid/RMID is scheduled in.
+ * - We allocate RMIDs/CLOSids globally in order to keep this as
+ *   simple as possible.
+ * Must be called with preemption disabled.
+ */
+void __resctrl_sched_in(struct task_struct *tsk)
+{
+	struct resctrl_pqr_state *state = this_cpu_ptr(&pqr_state);
+	u32 closid = state->default_closid;
+	u32 rmid = state->default_rmid;
+	u32 tmp;
+
+	/*
+	 * If this task has a closid/rmid assigned, use it.
+	 * Else use the closid/rmid assigned to this cpu.
+	 */
+	if (static_branch_likely(&rdt_alloc_enable_key)) {
+		tmp = READ_ONCE(tsk->closid);
+		if (tmp)
+			closid = tmp;
+	}
+
+	if (static_branch_likely(&rdt_mon_enable_key)) {
+		tmp = READ_ONCE(tsk->rmid);
+		if (tmp)
+			rmid = tmp;
+	}
+
+	if (closid != state->cur_closid || rmid != state->cur_rmid) {
+		state->cur_closid = closid;
+		state->cur_rmid = rmid;
+		wrmsr(MSR_IA32_PQR_ASSOC, rmid, closid);
+	}
+}
+
+/*
  * This is safe against resctrl_sched_in() called from __switch_to()
  * because __switch_to() is executed with interrupts disabled. A local call
  * from update_closid_rmid() is protected against __switch_to() because

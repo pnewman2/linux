@@ -38,6 +38,7 @@
 #include <linux/io.h>
 #include <linux/kdebug.h>
 #include <linux/syscalls.h>
+#include <linux/resctrl.h>
 
 #include <asm/ldt.h>
 #include <asm/processor.h>
@@ -51,7 +52,6 @@
 #include <asm/debugreg.h>
 #include <asm/switch_to.h>
 #include <asm/vm86.h>
-#include <asm/resctrl.h>
 #include <asm/proto.h>
 
 #include "process.h"
