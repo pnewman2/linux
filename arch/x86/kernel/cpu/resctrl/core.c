@@ -37,12 +37,12 @@
 static DEFINE_MUTEX(domain_list_lock);
 
 /*
- * The cached resctrl_pqr_state is strictly per CPU and can never be
+ * The cached resctrl_cpu_state is strictly per CPU and can never be
  * updated from a remote CPU. Functions which modify the state
  * are called with interrupts disabled and no preemption, which
  * is sufficient for the protection.
  */
-DEFINE_PER_CPU(struct resctrl_pqr_state, pqr_state);
+DEFINE_PER_CPU(struct resctrl_cpu_state, resctrl_state);
 
 /*
  * Used to store the max resource name width and max resource data width
@@ -307,6 +307,11 @@ static void rdt_get_cdp_l3_config(void)
 static void rdt_get_cdp_l2_config(void)
 {
 	rdt_get_cdp_config(RDT_RESOURCE_L2);
+}
+
+void resctrl_arch_update_cpu(u32 ctrl_id, u32 mon_id)
+{
+	wrmsr(MSR_IA32_PQR_ASSOC, mon_id, ctrl_id);
 }
 
 static void
@@ -598,7 +603,7 @@ static void domain_remove_cpu(int cpu, struct rdt_resource *r)
 
 static void clear_closid_rmid(int cpu)
 {
-	struct resctrl_pqr_state *state = this_cpu_ptr(&pqr_state);
+	struct resctrl_cpu_state *state = this_cpu_ptr(&resctrl_state);
 
 	state->default_group = &rdtgroup_default;
 	state->cur_closid = RESCTRL_RESERVED_CLOSID;

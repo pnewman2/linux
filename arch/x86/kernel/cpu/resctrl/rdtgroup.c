@@ -112,7 +112,7 @@ void rdt_staged_configs_clear(void)
  * + We can simply set current's closid to assign a task to a resource
  *   group.
  * + Context switch code can avoid extra memory references deciding which
- *   CLOSID to load into the PQR_ASSOC MSR
+ *   CLOSID to load into the CPU
  * - We give up some options in configuring resource groups across multi-socket
  *   systems.
  * - Our choices on how to configure each resource become progressively more
@@ -347,7 +347,7 @@ static int rdtgroup_cpus_show(struct kernfs_open_file *of,
  */
 void __resctrl_sched_in(struct task_struct *tsk)
 {
-	struct resctrl_pqr_state *state = this_cpu_ptr(&pqr_state);
+	struct resctrl_cpu_state *state = this_cpu_ptr(&resctrl_state);
 	u32 closid = state->cur_closid;
 	u32 rmid = state->cur_rmid;
 	struct rdtgroup *rgrp;
@@ -401,7 +401,7 @@ void __resctrl_sched_in(struct task_struct *tsk)
 	if (closid != state->cur_closid || rmid != state->cur_rmid) {
 		state->cur_closid = closid;
 		state->cur_rmid = rmid;
-		wrmsr(MSR_IA32_PQR_ASSOC, rmid, closid);
+		resctrl_arch_update_cpu(closid, rmid);
 	}
 }
 
@@ -416,7 +416,7 @@ static void update_cpu_closid_rmid(void *info)
 	struct rdtgroup *r = info;
 
 	if (r)
-		this_cpu_write(pqr_state.default_group, r);
+		this_cpu_write(resctrl_state.default_group, r);
 
 	/*
 	 * We cannot unconditionally write the MSR because the current
@@ -635,8 +635,8 @@ static void rdtgroup_remove(struct rdtgroup *rdtgrp)
 static void _update_task_closid_rmid(void *task)
 {
 	/*
-	 * If the task is still current on this CPU, update PQR_ASSOC MSR.
-	 * Otherwise, the MSR is updated when the task is scheduled in.
+	 * If the task is still current on this CPU, update the current ctrl
+	 * group. Otherwise, the CPU is updated when the task is scheduled in.
 	 */
 	if (task == current)
 		resctrl_sched_in(task);
@@ -3005,7 +3005,7 @@ static void rmdir_all_sub(void)
 		else
 			rdtgroup_remove(rdtgrp);
 	}
-	/* Notify online CPUs to update per cpu storage and PQR_ASSOC MSR */
+	/* Update online CPUs to propagate group membership changes. */
 	update_closid_rmid(cpu_online_mask, &rdtgroup_default);
 
 	kernfs_remove(kn_info);
@@ -3688,7 +3688,7 @@ static int rdtgroup_rmdir_mon(struct rdtgroup *rdtgrp, cpumask_var_t tmpmask)
 
 	/* Update per cpu rmid of the moved CPUs first */
 	for_each_cpu(cpu, &rdtgrp->cpu_mask)
-		per_cpu(pqr_state.default_group, cpu) = prdtgrp;
+		per_cpu(resctrl_state.default_group, cpu) = prdtgrp;
 	/*
 	 * Update the MSR on moved CPUs and CPUs which have moved
 	 * task running on them.
@@ -3732,7 +3732,7 @@ static int rdtgroup_rmdir_ctrl(struct rdtgroup *rdtgrp, cpumask_var_t tmpmask)
 
 	/* Update per cpu closid and rmid of the moved CPUs first */
 	for_each_cpu(cpu, &rdtgrp->cpu_mask)
-		per_cpu(pqr_state.default_group, cpu) = &rdtgroup_default;
+		per_cpu(resctrl_state.default_group, cpu) = &rdtgroup_default;
 
 	/*
 	 * Update the MSR on moved CPUs and CPUs which have moved

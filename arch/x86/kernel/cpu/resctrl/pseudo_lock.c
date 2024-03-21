@@ -480,8 +480,8 @@ static int pseudo_lock_fn(void *_rdtgrp)
 	 */
 	saved_msr = __rdmsr(MSR_MISC_FEATURE_CONTROL);
 	__wrmsr(MSR_MISC_FEATURE_CONTROL, prefetch_disable_bits, 0x0);
-	closid_p = this_cpu_read(pqr_state.cur_closid);
-	rmid_p = this_cpu_read(pqr_state.cur_rmid);
+	closid_p = this_cpu_read(resctrl_state.cur_closid);
+	rmid_p = this_cpu_read(resctrl_state.cur_rmid);
 	mem_r = plr->kmem;
 	size = plr->size;
 	line_size = plr->line_size;

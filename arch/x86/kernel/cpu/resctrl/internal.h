@@ -332,7 +332,7 @@ struct rftype {
 };
 
 /**
- * struct resctrl_pqr_state - State cache for the PQR MSR
+ * struct resctrl_cpu_state - State cache for allocation/monitoring group IDs
  * @cur_rmid:		The cached Resource Monitoring ID
  * @cur_closid:		The cached Class Of Service ID
  * @default_group:	The user assigned rdtgroup
@@ -340,13 +340,13 @@ struct rftype {
  * The cache also helps to avoid pointless updates if the value does
  * not change.
  */
-struct resctrl_pqr_state {
+struct resctrl_cpu_state {
 	u32			cur_rmid;
 	u32			cur_closid;
 	struct rdtgroup		*default_group;
 };
 
-DECLARE_PER_CPU(struct resctrl_pqr_state, pqr_state);
+DECLARE_PER_CPU(struct resctrl_cpu_state, resctrl_state);
 
 /**
  * struct mbm_state - status for each MBM counter in each domain

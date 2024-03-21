@@ -306,6 +306,17 @@ extern unsigned int resctrl_rmid_realloc_limit;
 
 DECLARE_STATIC_KEY_FALSE(rdt_enable_key);
 
+/*
+ * resctrl_arch_update_cpu() - Make control and monitoring group IDs effective
+ *			       on the current CPU
+ *
+ * @ctrl_id:	An architecture-specific identifier for the control group which
+ *		is to be used on the current CPU.
+ * @mon_id:	An architecture-specific identifier for the monitoring group
+ *		which is to be used on the current CPU.
+ */
+void resctrl_arch_update_cpu(u32 ctrl_id, u32 mon_id);
+
 void __resctrl_sched_in(struct task_struct *tsk);
 
 /*
