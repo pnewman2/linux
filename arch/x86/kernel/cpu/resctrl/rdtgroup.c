@@ -2931,6 +2931,16 @@ static void rdt_move_group_tasks(struct rdtgroup *from, struct rdtgroup *to,
 	read_unlock(&tasklist_lock);
 }
 
+/**
+ * exit_resctrl() - called at thread destruction to release resources
+ *
+ * This hook is called just before the task is removed from the global tasklist
+ * and still reachable via for_each_process_thread().
+ */
+void exit_resctrl(struct task_struct *tsk)
+{
+}
+
 static void free_all_child_rdtgrp(struct rdtgroup *rdtgrp)
 {
 	struct rdtgroup *sentry, *stmp;

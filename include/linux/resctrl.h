@@ -325,4 +325,10 @@ static inline void resctrl_sched_in(struct task_struct *tsk)
 #endif
 }
 
+#ifdef CONFIG_X86_CPU_RESCTRL
+void exit_resctrl(struct task_struct *tsk);
+#else
+static inline void exit_resctrl(struct task_struct *tsk) {}
+#endif
+
 #endif /* _RESCTRL_H */

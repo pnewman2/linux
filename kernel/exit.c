@@ -70,6 +70,7 @@
 #include <linux/sysfs.h>
 #include <linux/user_events.h>
 #include <linux/uaccess.h>
+#include <linux/resctrl.h>
 
 #include <uapi/linux/wait.h>
 
@@ -861,6 +862,8 @@ void __noreturn do_exit(long code)
 
 	tsk->exit_code = code;
 	taskstats_exit(tsk, group_dead);
+
+	exit_resctrl(tsk);
 
 	exit_mm();
 
