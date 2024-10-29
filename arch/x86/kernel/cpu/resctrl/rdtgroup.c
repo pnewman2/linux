@@ -65,6 +65,8 @@ static void rdtgroup_destroy_root(void);
 
 struct dentry *debugfs_resctrl;
 
+enum resctrl_event_id mba_mbps_default_event;
+
 static bool resctrl_debug;
 
 void rdt_last_cmd_clear(void)
@@ -2665,6 +2667,8 @@ static int rdt_get_tree(struct fs_context *fc)
 	if (ret)
 		goto out_schemata_free;
 
+	rdtgroup_default.mba_mbps_event = mba_mbps_default_event;
+
 	kernfs_activate(rdtgroup_default.kn);
 
 	ret = rdtgroup_create_info_dir(rdtgroup_default.kn);
@@ -3623,6 +3627,8 @@ static int rdtgroup_mkdir_ctrl_mon(struct kernfs_node *parent_kn,
 			goto out_del_list;
 		}
 	}
+
+	rdtgrp->mba_mbps_event = mba_mbps_default_event;
 
 	goto out_unlock;
 

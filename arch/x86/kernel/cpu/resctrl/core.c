@@ -958,6 +958,11 @@ static __init bool get_rdt_mon_resources(void)
 	if (rdt_cpu_has(X86_FEATURE_CQM_MBM_LOCAL))
 		rdt_mon_features |= (1 << QOS_L3_MBM_LOCAL_EVENT_ID);
 
+	if (rdt_mon_features & (1 << QOS_L3_MBM_LOCAL_EVENT_ID))
+		mba_mbps_default_event = QOS_L3_MBM_LOCAL_EVENT_ID;
+	else if (rdt_mon_features & (1 << QOS_L3_MBM_TOTAL_EVENT_ID))
+		mba_mbps_default_event = QOS_L3_MBM_TOTAL_EVENT_ID;
+
 	if (!rdt_mon_features)
 		return false;
 
