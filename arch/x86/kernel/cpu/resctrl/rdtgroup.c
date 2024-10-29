@@ -1944,6 +1944,12 @@ static struct rftype res_common_files[] = {
 		.fflags		= RFTYPE_CTRL_BASE,
 	},
 	{
+		.name		= "mba_MBps_event",
+		.mode		= 0644,
+		.kf_ops		= &rdtgroup_kf_single_ops,
+		.seq_show	= rdtgroup_mba_mbps_event_show,
+	},
+	{
 		.name		= "mode",
 		.mode		= 0644,
 		.kf_ops		= &rdtgroup_kf_single_ops,
@@ -2040,6 +2046,15 @@ void __init mbm_config_rftype_init(const char *config)
 	rft = rdtgroup_get_rftype_by_name(config);
 	if (rft)
 		rft->fflags = RFTYPE_MON_INFO | RFTYPE_RES_CACHE;
+}
+
+static void mba_mbps_event_init(bool enable)
+{
+	struct rftype *rft;
+
+	rft = rdtgroup_get_rftype_by_name("mba_MBps_event");
+	if (rft)
+		rft->fflags = enable ? RFTYPE_CTRL_BASE : 0;
 }
 
 /**
@@ -2370,6 +2385,8 @@ static int set_mba_sc(bool mba_sc)
 		for (i = 0; i < num_closid; i++)
 			d->mbps_val[i] = MBA_MAX_MBPS;
 	}
+
+	mba_mbps_event_init(mba_sc);
 
 	return 0;
 }
