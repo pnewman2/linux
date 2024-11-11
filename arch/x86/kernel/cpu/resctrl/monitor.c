@@ -670,6 +670,9 @@ static void mbm_bw_count(u32 closid, u32 rmid, struct rmid_read *rr)
 	if (WARN_ON_ONCE(!m))
 		return;
 
+	if (WARN_ON_ONCE(!m))
+		return;
+
 	cur_bytes = rr->val;
 	bytes = cur_bytes - m->prev_bw_bytes;
 	m->prev_bw_bytes = cur_bytes;
@@ -716,6 +719,18 @@ void mon_event_count(void *info)
 	 */
 	if (ret == 0)
 		rr->err = 0;
+}
+
+u64 mon_event_rate(struct rdt_mon_domain *d, struct rdtgroup *rdtgrp, int evtid)
+{
+	struct mbm_state *m;
+
+	m = get_mbm_state(d, rdtgrp->closid, rdtgrp->mon.rmid, evtid);
+	if (WARN_ON(!m)) {
+		/* only MBM events should have rate files */
+		return 0;
+	}
+	return m->prev_bw;
 }
 
 /*
@@ -829,6 +844,11 @@ static void update_mba_bw(struct rdtgroup *rgrp, struct rdt_mon_domain *dom_mbm)
 	resctrl_arch_update_one(r_mba, dom_mba, closid, CDP_NONE, new_msr_val);
 }
 
+static bool mbm_rate_events(void)
+{
+	return true;
+}
+
 static void mbm_update_one_event(struct rdt_resource *r, struct rdt_mon_domain *d,
 				 u32 closid, u32 rmid, enum resctrl_event_id evtid)
 {
@@ -846,7 +866,7 @@ static void mbm_update_one_event(struct rdt_resource *r, struct rdt_mon_domain *
 
 	__mon_event_count(closid, rmid, &rr);
 
-	if (is_mba_sc(NULL))
+	if (is_mba_sc(NULL) || mbm_rate_events())
 		mbm_bw_count(closid, rmid, &rr);
 
 	resctrl_arch_mon_ctx_free(rr.r, rr.evtid, rr.arch_mon_ctx);
