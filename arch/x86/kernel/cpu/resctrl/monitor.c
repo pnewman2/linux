@@ -663,9 +663,11 @@ static int __mon_event_count(u32 closid, u32 rmid, struct rmid_read *rr)
  */
 static void mbm_bw_count(u32 closid, u32 rmid, struct rmid_read *rr)
 {
-	u32 idx = resctrl_arch_rmid_idx_encode(closid, rmid);
-	struct mbm_state *m = &rr->d->mbm_local[idx];
+	struct mbm_state *m = get_mbm_state(rr->d, closid, rmid, rr->evtid);
 	u64 cur_bw, bytes, cur_bytes;
+
+	if (WARN_ON_ONCE(!m))
+		return;
 
 	cur_bytes = rr->val;
 	bytes = cur_bytes - m->prev_bw_bytes;
@@ -713,6 +715,18 @@ void mon_event_count(void *info)
 	 */
 	if (ret == 0)
 		rr->err = 0;
+}
+
+u64 mon_event_rate(struct rdt_mon_domain *d, struct rdtgroup *rdtgrp, int evtid)
+{
+	struct mbm_state *m;
+
+	m = get_mbm_state(d, rdtgrp->closid, rdtgrp->mon.rmid, evtid);
+	if (WARN_ON(!m)) {
+		/* only MBM events should have rate files */
+		return 0;
+	}
+	return m->prev_bw;
 }
 
 /*
@@ -813,6 +827,11 @@ static void update_mba_bw(struct rdtgroup *rgrp, struct rdt_mon_domain *dom_mbm)
 	resctrl_arch_update_one(r_mba, dom_mba, closid, CDP_NONE, new_msr_val);
 }
 
+static bool mbm_rate_events(void)
+{
+	return true;
+}
+
 static void mbm_update(struct rdt_resource *r, struct rdt_mon_domain *d,
 		       u32 closid, u32 rmid)
 {
@@ -837,6 +856,9 @@ static void mbm_update(struct rdt_resource *r, struct rdt_mon_domain *d,
 
 		__mon_event_count(closid, rmid, &rr);
 
+		if (mbm_rate_events())
+			mbm_bw_count(closid, rmid, &rr);
+
 		resctrl_arch_mon_ctx_free(rr.r, rr.evtid, rr.arch_mon_ctx);
 	}
 	if (is_mbm_local_enabled()) {
@@ -856,7 +878,7 @@ static void mbm_update(struct rdt_resource *r, struct rdt_mon_domain *d,
 		 * control groups and when user has enabled
 		 * the software controller explicitly.
 		 */
-		if (is_mba_sc(NULL))
+		if (is_mba_sc(NULL) || mbm_rate_events())
 			mbm_bw_count(closid, rmid, &rr);
 
 		resctrl_arch_mon_ctx_free(rr.r, rr.evtid, rr.arch_mon_ctx);

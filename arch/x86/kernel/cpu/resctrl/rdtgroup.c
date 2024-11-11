@@ -293,6 +293,11 @@ static const struct kernfs_ops kf_mondata_ops = {
 	.seq_show		= rdtgroup_mondata_show,
 };
 
+static const struct kernfs_ops kf_monrate_ops = {
+	.atomic_write_len	= PAGE_SIZE,
+	.seq_show		= rdtgroup_monrate_show,
+};
+
 static bool is_cpu_list(struct kernfs_open_file *of)
 {
 	struct rftype *rft = of->kn->priv;
@@ -2623,6 +2628,8 @@ static void schemata_list_destroy(void)
 		kfree(s);
 	}
 }
+static int add_mondata_domain_files(struct rdt_resource *r,
+				    struct rdt_mon_domain *d);
 
 static int rdt_get_tree(struct fs_context *fc)
 {
@@ -2683,6 +2690,15 @@ static int rdt_get_tree(struct fs_context *fc)
 		if (ret < 0)
 			goto out_mongrp;
 		rdtgroup_default.mon.mon_data_kn = kn_mondata;
+
+		/* Add per-domain aggregation files. */
+		for_each_mon_capable_rdt_resource(r) {
+			list_for_each_entry(dom, &r->mon_domains, hdr.list) {
+				ret = add_mondata_domain_files(r, dom);
+				if (ret)
+					goto out_mongrp;
+			}
+		}
 	}
 
 	ret = rdt_pseudo_lock_init();
@@ -3132,6 +3148,41 @@ static int mkdir_mondata_subdir(struct kernfs_node *parent_kn,
 out_destroy:
 	kernfs_remove(kn);
 	return ret;
+}
+
+static int add_mondata_domain_files(struct rdt_resource *r,
+				    struct rdt_mon_domain *d)
+{
+	union mon_data_bits mon_data = {0};
+	struct kernfs_node *kn;
+	struct mon_evt *mevt;
+	char name[40];
+	int ret;
+
+	list_for_each_entry(mevt, &r->evt_list, list) {
+		if (!is_mbm_event(mevt->evtid))
+			continue;
+		snprintf(name, sizeof(name), "%s_rate_%s_%02d", mevt->name,
+			 r->name, d->hdr.id);
+		mon_data.u.domid = d->hdr.id;
+		mon_data.u.evtid = mevt->evtid;
+		mon_data.u.rid = r->rid;
+		kn = __kernfs_create_file(kn_info, name, 0444,
+					  GLOBAL_ROOT_UID, GLOBAL_ROOT_GID, 0,
+					  &kf_monrate_ops, mon_data.priv,
+					  NULL, NULL);
+		if (IS_ERR(kn))
+			return PTR_ERR(kn);
+
+		ret = rdtgroup_kn_set_ugid(kn);
+		if (ret) {
+			kernfs_remove(kn);
+			return ret;
+		}
+	}
+	kernfs_activate(kn_info);
+
+	return 0;
 }
 
 /*
@@ -4108,8 +4159,12 @@ int resctrl_online_mon_domain(struct rdt_resource *r, struct rdt_mon_domain *d)
 	 * by rdt_get_tree() calling mkdir_mondata_all().
 	 * If resctrl is mounted, add per domain monitor data directories.
 	 */
-	if (resctrl_mounted && resctrl_arch_mon_capable())
+	if (resctrl_mounted && resctrl_arch_mon_capable()) {
 		mkdir_mondata_subdir_allrdtgrp(r, d);
+
+		/* Add per-domain aggregation files. */
+		add_mondata_domain_files(r, d);
+	}
 
 out_unlock:
 	mutex_unlock(&rdtgroup_mutex);

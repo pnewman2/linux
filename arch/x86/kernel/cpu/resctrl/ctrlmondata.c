@@ -625,3 +625,50 @@ out:
 	rdtgroup_kn_unlock(of->kn);
 	return ret;
 }
+
+int rdtgroup_monrate_show(struct seq_file *m, void *arg)
+{
+	struct kernfs_open_file *of = m->private;
+	struct kernfs_node *kn = of->kn;
+	struct rdt_domain_hdr *hdr;
+	struct rdt_mon_domain *d;
+	struct rdtgroup *rdtgrp;
+	struct rdt_resource *r;
+	union mon_data_bits md;
+	int ret = 0;
+	struct rdtgroup *entry;
+	struct list_head *head;
+	u64 total, mbps;
+
+	md.priv = kn->priv;
+	r = &rdt_resources_all[md.u.rid].r_resctrl;
+
+	kernfs_break_active_protection(kn);
+	mutex_lock(&rdtgroup_mutex);
+
+	hdr = rdt_find_domain(&r->mon_domains, md.u.domid, NULL);
+	if (!hdr || WARN_ON_ONCE(hdr->type != RESCTRL_MON_DOMAIN)) {
+		ret = -ENOENT;
+		goto out;
+	}
+	d = container_of(hdr, struct rdt_mon_domain, hdr);
+
+	list_for_each_entry(rdtgrp, &rdt_all_groups, rdtgroup_list) {
+		head = &rdtgrp->mon.crdtgrp_list;
+		total = 0;
+		list_for_each_entry(entry, head, mon.crdtgrp_list) {
+			mbps = mon_event_rate(d, entry, md.u.evtid);
+			total += mbps;
+			seq_printf(m, "%s/%s %llu\n", rdtgrp->kn->name,
+				   entry->kn->name, mbps);
+		}
+		total += mon_event_rate(d, rdtgrp, md.u.evtid);
+		seq_printf(m, "%s %llu\n", rdtgrp->kn->name, total);
+	}
+
+out:
+	mutex_unlock(&rdtgroup_mutex);
+	kernfs_unbreak_active_protection(kn);
+
+	return ret;
+}
