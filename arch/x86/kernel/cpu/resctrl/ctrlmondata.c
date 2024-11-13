@@ -728,12 +728,14 @@ int rdtgroup_monrate_show(struct seq_file *m, void *arg)
 		head = &rdtgrp->mon.crdtgrp_list;
 		total = 0;
 		list_for_each_entry(entry, head, mon.crdtgrp_list) {
-			mbps = mon_event_rate(d, entry, md.u.evtid);
+			u32 latency;
+
+			mbps = mon_event_rate(d, entry, md.u.evtid, &latency);
 			total += mbps;
-			seq_printf(m, "%s/%s %llu\n", rdtgrp->kn->name,
-				   entry->kn->name, mbps);
+			seq_printf(m, "%s/%s %llu (%u)\n", rdtgrp->kn->name,
+				   entry->kn->name, mbps, latency);
 		}
-		total += mon_event_rate(d, rdtgrp, md.u.evtid);
+		total += mon_event_rate(d, rdtgrp, md.u.evtid, NULL);
 		seq_printf(m, "%s %llu\n", rdtgrp->kn->name, total);
 	}
 

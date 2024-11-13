@@ -664,6 +664,7 @@ static int __mon_event_count(u32 closid, u32 rmid, struct rmid_read *rr)
 static void mbm_bw_count(u32 closid, u32 rmid, struct rmid_read *rr)
 {
 	u64 cur_bw, bytes, cur_bytes;
+	u64 ts;
 	struct mbm_state *m;
 
 	m = get_mbm_state(rr->d, closid, rmid, rr->evtid);
@@ -680,6 +681,10 @@ static void mbm_bw_count(u32 closid, u32 rmid, struct rmid_read *rr)
 	cur_bw = bytes / SZ_1M;
 
 	m->prev_bw = cur_bw;
+
+	ts = jiffies;
+	m->latency = jiffies - m->last_update_jiffies;
+	m->last_update_jiffies = ts;
 }
 
 /*
@@ -721,7 +726,7 @@ void mon_event_count(void *info)
 		rr->err = 0;
 }
 
-u64 mon_event_rate(struct rdt_mon_domain *d, struct rdtgroup *rdtgrp, int evtid)
+u64 mon_event_rate(struct rdt_mon_domain *d, struct rdtgroup *rdtgrp, int evtid, u32 *latency)
 {
 	struct mbm_state *m;
 
@@ -730,6 +735,8 @@ u64 mon_event_rate(struct rdt_mon_domain *d, struct rdtgroup *rdtgrp, int evtid)
 		/* only MBM events should have rate files */
 		return 0;
 	}
+	if (latency)
+		*latency = m->latency;
 	return m->prev_bw;
 }
 

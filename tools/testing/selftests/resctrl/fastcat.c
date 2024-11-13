@@ -51,7 +51,7 @@ int main(int argc, char **argv)
 		for (i = 0; i < nfiles; i++) {
 			// Assumed to be large enough for any output of
 			// mbm_*_bytes
-			char buf[40];
+			char buf[4096];
 			ssize_t r;
 
 			r = pread(fds[i], buf, sizeof(buf), 0);

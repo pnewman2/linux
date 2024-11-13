@@ -367,6 +367,8 @@ struct rftype {
 struct mbm_state {
 	u64	prev_bw_bytes;
 	u32	prev_bw;
+	u64	last_update_jiffies;
+	u32	latency;
 };
 
 /**
@@ -643,7 +645,7 @@ void mon_event_read(struct rmid_read *rr, struct rdt_resource *r,
 		    struct rdt_mon_domain *d, struct rdtgroup *rdtgrp,
 		    cpumask_t *cpumask, int evtid, int first);
 u64 mon_event_rate(struct rdt_mon_domain *d, struct rdtgroup *rdtgrp,
-		   int evtid);
+		   int evtid, u32 *latency);
 void mbm_setup_overflow_handler(struct rdt_mon_domain *dom,
 				unsigned long delay_ms,
 				int exclude_cpu);
